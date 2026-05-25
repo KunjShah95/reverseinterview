@@ -14,7 +14,51 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      analyses: {
+        Row: {
+          company: string | null
+          created_at: string
+          error: string | null
+          id: string
+          result: Json | null
+          session_id: string | null
+          source_file_url: string | null
+          source_text: string | null
+          source_type: string
+          status: string
+          structured_input: Json | null
+          updated_at: string
+        }
+        Insert: {
+          company?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          result?: Json | null
+          session_id?: string | null
+          source_file_url?: string | null
+          source_text?: string | null
+          source_type: string
+          status?: string
+          structured_input?: Json | null
+          updated_at?: string
+        }
+        Update: {
+          company?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          result?: Json | null
+          session_id?: string | null
+          source_file_url?: string | null
+          source_text?: string | null
+          source_type?: string
+          status?: string
+          structured_input?: Json | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
