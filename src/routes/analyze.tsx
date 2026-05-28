@@ -2,14 +2,27 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { z } from "zod";
 import { useServerFn } from "@tanstack/react-start";
-import { Loader2, Sparkles, FileText, Image as ImageIcon, Building2, Type, Upload } from "lucide-react";
+import {
+  Loader2,
+  Sparkles,
+  FileText,
+  Image as ImageIcon,
+  Building2,
+  Type,
+  Upload,
+  CheckCircle2,
+  AlertTriangle,
+} from "lucide-react";
 import { toast } from "sonner";
 import SiteNav from "@/components/SiteNav";
 import { runAnalysis } from "@/lib/analysis.functions";
 import {
-  extractFromPdf,
+  getPdfInfo,
+  extractPdfPages,
   extractFromImage,
   lookupCompany,
+  detectDocType,
+  type DocTypeResult,
 } from "@/lib/extract.functions";
 import { getSessionId } from "@/lib/session";
 
@@ -64,13 +77,25 @@ async function fileToBase64(file: File): Promise<string> {
   return btoa(binary);
 }
 
+const PDF_CHUNK = 3;
+
+const DOC_LABELS: Record<DocTypeResult["docType"], string> = {
+  job_description: "Job description",
+  offer_letter: "Offer letter",
+  recruiter_chat: "Recruiter chat",
+  company_brief: "Company brief",
+  unknown: "Document",
+};
+
 function AnalyzePage() {
   const { demo } = Route.useSearch();
   const navigate = useNavigate();
   const run = useServerFn(runAnalysis);
-  const extractPdf = useServerFn(extractFromPdf);
+  const pdfInfo = useServerFn(getPdfInfo);
+  const pdfPages = useServerFn(extractPdfPages);
   const extractImg = useServerFn(extractFromImage);
   const lookup = useServerFn(lookupCompany);
+  const classify = useServerFn(detectDocType);
 
   const [mode, setMode] = useState<Mode>("text");
   const [text, setText] = useState(demo ? DEMO_JD : "");
@@ -78,6 +103,13 @@ function AnalyzePage() {
   const [pdfName, setPdfName] = useState<string | null>(null);
   const [imgName, setImgName] = useState<string | null>(null);
   const [extracting, setExtracting] = useState(false);
+  const [pdfProgress, setPdfProgress] = useState<{
+    current: number;
+    total: number;
+  } | null>(null);
+
+  const [docType, setDocType] = useState<DocTypeResult | null>(null);
+  const [detecting, setDetecting] = useState(false);
 
   const [company, setCompany] = useState(demo ? "Sample Startup Inc." : "");
   const [roleTitle, setRoleTitle] = useState("");
@@ -86,29 +118,76 @@ function AnalyzePage() {
   const [yearsExperience, setYearsExperience] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  function resetDocType() {
+    setDocType(null);
+  }
+
   async function handlePdf(file: File) {
-    if (file.size > 12 * 1024 * 1024) {
-      toast.error("PDF is too large (max 12MB).");
+    if (file.size > 18 * 1024 * 1024) {
+      toast.error("PDF is too large (max 18MB).");
       return;
     }
     setExtracting(true);
     setPdfName(file.name);
+    setPdfProgress(null);
+    resetDocType();
     try {
       const base64 = await fileToBase64(file);
-      const { text: extracted } = await extractPdf({
-        data: { base64, filename: file.name },
-      });
-      if (extracted.trim().length < 40) {
-        toast.error("Couldn't read text from that PDF. Try a screenshot instead.");
+
+      let info: { numPages: number; hasText: boolean; warning: string | null };
+      try {
+        info = await pdfInfo({ data: { base64 } });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to open PDF.";
+        toast.error(msg);
+        return;
+      }
+
+      if (info.warning) {
+        toast.warning(info.warning);
+      }
+      if (info.numPages === 0) {
+        toast.error("This PDF reports 0 pages — it may be corrupted.");
+        return;
+      }
+
+      setPdfProgress({ current: 0, total: info.numPages });
+      const chunks: string[] = [];
+      let extractedSoFar = 0;
+      for (let from = 1; from <= info.numPages; from += PDF_CHUNK) {
+        const to = Math.min(from + PDF_CHUNK - 1, info.numPages);
+        try {
+          const { text: t, pagesExtracted } = await pdfPages({
+            data: { base64, fromPage: from, toPage: to },
+          });
+          if (t) chunks.push(t);
+          extractedSoFar += pagesExtracted;
+          setPdfProgress({ current: to, total: info.numPages });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "page extraction failed";
+          toast.error(`Failed on pages ${from}–${to}: ${msg}`);
+          break;
+        }
+      }
+
+      const merged = chunks.join("\n\n").slice(0, 80_000);
+      if (merged.trim().length < 40) {
+        toast.error(
+          "Pulled the PDF apart but found almost no text. It's likely scanned — try the Screenshot tab instead."
+        );
       } else {
-        setText(extracted);
-        toast.success(`Pulled ${extracted.length.toLocaleString()} chars from ${file.name}`);
+        setText(merged);
+        toast.success(
+          `Extracted ${extractedSoFar} page${extractedSoFar === 1 ? "" : "s"} (${merged.length.toLocaleString()} chars) from ${file.name}`
+        );
       }
     } catch (err) {
       console.error(err);
-      toast.error("PDF parse failed.");
+      const msg = err instanceof Error ? err.message : "PDF parse failed.";
+      toast.error(msg);
     } finally {
       setExtracting(false);
+      setPdfProgress(null);
     }
   }
 
@@ -119,6 +198,7 @@ function AnalyzePage() {
     }
     setExtracting(true);
     setImgName(file.name);
+    resetDocType();
     try {
       const base64 = await fileToBase64(file);
       const { text: extracted } = await extractImg({
@@ -144,11 +224,18 @@ function AnalyzePage() {
       return;
     }
     setExtracting(true);
+    resetDocType();
     try {
-      const { text: extracted } = await lookup({ data: { query: companyQuery } });
+      const { text: extracted, brief } = await lookup({
+        data: { query: companyQuery },
+      });
       setText(extracted);
-      if (!company) setCompany(companyQuery);
-      toast.success("Loaded company brief — review below, then run analysis.");
+      if (!company && brief?.companyName) setCompany(brief.companyName);
+      toast.success(
+        brief?.sourcesUsed?.length
+          ? `Pulled ${brief.sourcesUsed.length} page(s) — review below, then run analysis.`
+          : "Loaded company brief — review below, then run analysis."
+      );
     } catch (err) {
       console.error(err);
       const msg = err instanceof Error ? err.message : "Lookup failed.";
@@ -165,12 +252,29 @@ function AnalyzePage() {
       return;
     }
     setSubmitting(true);
+    setDetecting(true);
     try {
+      // Detect doc type first so the orchestrator gets richer context.
+      let detected: DocTypeResult | null = null;
+      try {
+        detected = await classify({ data: { text } });
+        setDocType(detected);
+        if (detected.suggestedCompany && !company) setCompany(detected.suggestedCompany);
+        if (detected.suggestedRole && !roleTitle) setRoleTitle(detected.suggestedRole);
+      } catch {
+        // Non-fatal — continue without classification.
+      }
+      setDetecting(false);
+
+      const typedPrefix = detected
+        ? `[Detected document type: ${DOC_LABELS[detected.docType]} (${detected.confidence} confidence) — ${detected.reason}]\n\n`
+        : "";
+
       const { id } = await run({
         data: {
-          sourceText: text,
-          company: company || undefined,
-          roleTitle: roleTitle || undefined,
+          sourceText: typedPrefix + text,
+          company: company || detected?.suggestedCompany || undefined,
+          roleTitle: roleTitle || detected?.suggestedRole || undefined,
           offeredSalary: offeredSalary || undefined,
           location: location || undefined,
           yearsExperience: yearsExperience || undefined,
@@ -189,6 +293,7 @@ function AnalyzePage() {
         toast.error("Analysis failed. Try a shorter or simpler text.");
       }
       setSubmitting(false);
+      setDetecting(false);
     }
   }
 
@@ -198,6 +303,10 @@ function AnalyzePage() {
     { id: "image", label: "Screenshot", icon: ImageIcon },
     { id: "company", label: "Company URL", icon: Building2 },
   ];
+
+  const pct = pdfProgress
+    ? Math.round((pdfProgress.current / Math.max(pdfProgress.total, 1)) * 100)
+    : 0;
 
   return (
     <main className="min-h-screen bg-paper">
@@ -228,7 +337,6 @@ function AnalyzePage() {
           onSubmit={onSubmit}
           className="rounded-2xl border border-ink/10 bg-white p-6 sm:p-8 shadow-sm"
         >
-          {/* Mode tabs */}
           <div className="mb-6 grid grid-cols-2 sm:grid-cols-4 gap-2 p-1 rounded-xl bg-cream/60 border border-ink/10">
             {modeTabs.map((t) => {
               const Icon = t.icon;
@@ -251,15 +359,35 @@ function AnalyzePage() {
             })}
           </div>
 
-          {/* Mode-specific input */}
           {mode === "pdf" && (
-            <FileDrop
-              accept="application/pdf"
-              label={pdfName ?? "Drop a PDF offer letter or JD"}
-              hint="Up to 12MB. We extract text on the server — file is not stored."
-              busy={extracting}
-              onFile={handlePdf}
-            />
+            <>
+              <FileDrop
+                accept="application/pdf"
+                label={pdfName ?? "Drop a PDF offer letter or JD"}
+                hint="Up to 18MB. Extracted page-by-page on the server — file is not stored."
+                busy={extracting}
+                onFile={handlePdf}
+              />
+              {pdfProgress && (
+                <div className="mt-3">
+                  <div className="flex justify-between text-xs text-body mb-1">
+                    <span>
+                      Extracting page {pdfProgress.current} of {pdfProgress.total}…
+                    </span>
+                    <span className="font-medium text-ink">{pct}%</span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-ink/10 overflow-hidden">
+                    <div
+                      className="h-full transition-all duration-300"
+                      style={{
+                        width: `${pct}%`,
+                        backgroundColor: "var(--heading-accent)",
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+            </>
           )}
           {mode === "image" && (
             <FileDrop
@@ -297,8 +425,8 @@ function AnalyzePage() {
                 </button>
               </div>
               <p className="mt-2 text-xs text-body/80">
-                URLs are fetched and stripped to text. Plain company names use
-                public-knowledge AI brief.
+                URLs are fetched, then About / Values / Benefits / Careers pages
+                are pulled and summarized. Plain names fall back to a public-knowledge brief.
               </p>
             </div>
           )}
@@ -310,7 +438,10 @@ function AnalyzePage() {
           </label>
           <textarea
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value);
+              resetDocType();
+            }}
             placeholder={
               mode === "text"
                 ? "Paste the full job posting here..."
@@ -319,6 +450,21 @@ function AnalyzePage() {
             className="w-full min-h-[260px] rounded-xl border border-ink/15 bg-cream/40 px-4 py-3 text-sm text-ink font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-heading/40 focus:border-heading/40"
             required
           />
+
+          {docType && (
+            <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-ink/15 bg-cream/40 px-3 py-1.5 text-xs text-ink">
+              {docType.docType === "unknown" ? (
+                <AlertTriangle size={12} className="text-body" />
+              ) : (
+                <CheckCircle2
+                  size={12}
+                  style={{ color: "var(--heading-accent)" }}
+                />
+              )}
+              <span className="font-medium">{DOC_LABELS[docType.docType]}</span>
+              <span className="text-body/80">· {docType.confidence} confidence</span>
+            </div>
+          )}
 
           <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Field label="Company (optional)" value={company} onChange={setCompany} placeholder="Acme Corp" />
@@ -337,7 +483,9 @@ function AnalyzePage() {
               {submitting ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
-                  Analyzing — 8 agents running…
+                  {detecting
+                    ? "Detecting document type…"
+                    : "Analyzing — 8 agents running…"}
                 </>
               ) : (
                 <>Run analysis →</>
@@ -349,6 +497,7 @@ function AnalyzePage() {
                 onClick={() => {
                   setText(DEMO_JD);
                   setCompany("Sample Startup Inc.");
+                  resetDocType();
                   toast("Loaded a sample toxic JD — submit to see the magic.");
                 }}
                 className="text-sm text-ink/70 hover:text-ink underline-offset-4 hover:underline"

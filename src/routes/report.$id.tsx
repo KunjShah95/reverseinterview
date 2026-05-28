@@ -1,13 +1,17 @@
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery } from "@tanstack/react-query";
+import { useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
   ShieldAlert,
   Quote,
   ArrowRight,
+  Download,
+  Loader2,
 } from "lucide-react";
+import { toast } from "sonner";
 import SiteNav from "@/components/SiteNav";
 import SiteFooter from "@/components/SiteFooter";
 import { getAnalysis } from "@/lib/analysis.functions";
@@ -90,33 +94,99 @@ function ReportPage() {
   }
 
   const r = data.result;
+  const reportRef = useRef<HTMLDivElement>(null);
+  const [downloading, setDownloading] = useState(false);
+
+  async function downloadPdf() {
+    if (!reportRef.current) return;
+    setDownloading(true);
+    try {
+      const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([
+        import("html2canvas"),
+        import("jspdf"),
+      ]);
+      const node = reportRef.current;
+      const canvas = await html2canvas(node, {
+        backgroundColor: "#fbf9f4",
+        scale: 2,
+        useCORS: true,
+        windowWidth: node.scrollWidth,
+      });
+      const imgData = canvas.toDataURL("image/jpeg", 0.92);
+      const pdf = new jsPDF({ unit: "pt", format: "a4", orientation: "portrait" });
+      const pageW = pdf.internal.pageSize.getWidth();
+      const pageH = pdf.internal.pageSize.getHeight();
+      const imgW = pageW;
+      const imgH = (canvas.height * imgW) / canvas.width;
+
+      let position = 0;
+      let heightLeft = imgH;
+      pdf.addImage(imgData, "JPEG", 0, position, imgW, imgH);
+      heightLeft -= pageH;
+      while (heightLeft > 0) {
+        position -= pageH;
+        pdf.addPage();
+        pdf.addImage(imgData, "JPEG", 0, position, imgW, imgH);
+        heightLeft -= pageH;
+      }
+      const safeCompany = (r.company || "report")
+        .replace(/[^a-z0-9-]+/gi, "-")
+        .replace(/^-+|-+$/g, "")
+        .toLowerCase()
+        .slice(0, 40);
+      pdf.save(`reverse-interview-${safeCompany || "report"}.pdf`);
+    } catch (err) {
+      console.error(err);
+      toast.error("PDF export failed. Try again or use your browser's print → save as PDF.");
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-paper">
       <SiteNav solid />
-      <VerdictHero r={r} />
-      <div className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pb-20 space-y-8">
-        <TruthScoreCard r={r} />
-        <div className="grid gap-6 lg:grid-cols-2">
-          <ToxicityCard r={r} />
-          <BurnoutGhostCard r={r} />
+      <div ref={reportRef}>
+        <VerdictHero r={r} />
+        <div className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pb-20 space-y-8">
+          <TruthScoreCard r={r} />
+          <div className="grid gap-6 lg:grid-cols-2">
+            <ToxicityCard r={r} />
+            <BurnoutGhostCard r={r} />
+          </div>
+          <SalaryCard r={r} />
+          <LieDetectorCard r={r} />
+          <ReverseQuestionsCard r={r} />
+          <SimulationCard r={r} />
+          <NegotiationCard r={r} />
+          <p className="text-xs text-body/70 text-center pt-6">
+            Signals are interpretive, not factual claims. Always do your own
+            research before accepting an offer.
+          </p>
         </div>
-        <SalaryCard r={r} />
-        <LieDetectorCard r={r} />
-        <ReverseQuestionsCard r={r} />
-        <SimulationCard r={r} />
-        <NegotiationCard r={r} />
-        <p className="text-xs text-body/70 text-center pt-6">
-          Signals are interpretive, not factual claims. Always do your own
-          research before accepting an offer.
-        </p>
-        <div className="text-center">
-          <Link
-            to="/analyze"
-            className="inline-flex items-center gap-2 rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-cream hover:bg-ink-hover transition-colors"
-          >
-            Analyze another job <ArrowRight size={14} />
-          </Link>
-        </div>
+      </div>
+      <div className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pb-10 flex flex-wrap items-center justify-center gap-3">
+        <button
+          onClick={downloadPdf}
+          disabled={downloading}
+          className="inline-flex items-center gap-2 rounded-full border border-ink/15 bg-white px-5 py-2.5 text-sm font-medium text-ink hover:bg-cream transition-colors disabled:opacity-60"
+        >
+          {downloading ? (
+            <>
+              <Loader2 size={14} className="animate-spin" /> Building PDF…
+            </>
+          ) : (
+            <>
+              <Download size={14} /> Download as PDF
+            </>
+          )}
+        </button>
+        <Link
+          to="/analyze"
+          className="inline-flex items-center gap-2 rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-cream hover:bg-ink-hover transition-colors"
+        >
+          Analyze another job <ArrowRight size={14} />
+        </Link>
       </div>
       <SiteFooter />
     </main>
