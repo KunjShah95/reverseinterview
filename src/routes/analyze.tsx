@@ -2,10 +2,15 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { z } from "zod";
 import { useServerFn } from "@tanstack/react-start";
-import { Loader2, Sparkles } from "lucide-react";
+import { Loader2, Sparkles, FileText, Image as ImageIcon, Building2, Type, Upload } from "lucide-react";
 import { toast } from "sonner";
 import SiteNav from "@/components/SiteNav";
 import { runAnalysis } from "@/lib/analysis.functions";
+import {
+  extractFromPdf,
+  extractFromImage,
+  lookupCompany,
+} from "@/lib/extract.functions";
 import { getSessionId } from "@/lib/session";
 
 const DEMO_JD = `Senior Full-Stack Engineer — URGENT HIRE
@@ -25,6 +30,8 @@ Responsibilities:
 
 We value work-life balance and a flat hierarchy. Apply ASAP — we're filling this immediately!`;
 
+type Mode = "text" | "pdf" | "image" | "company";
+
 export const Route = createFileRoute("/analyze")({
   validateSearch: z.object({ demo: z.number().optional() }),
   head: () => ({
@@ -33,7 +40,7 @@ export const Route = createFileRoute("/analyze")({
       {
         name: "description",
         content:
-          "Paste a job description or offer letter to get a multi-agent analysis: toxicity, burnout risk, salary fairness, and the questions you should ask back.",
+          "Paste a job description, upload a PDF offer letter, drop a screenshot, or just type a company name. Eight AI agents tell you what working there actually looks like.",
       },
       { property: "og:title", content: "Analyze a job — Reverse Interview AI" },
       {
@@ -46,12 +53,32 @@ export const Route = createFileRoute("/analyze")({
   component: AnalyzePage,
 });
 
+async function fileToBase64(file: File): Promise<string> {
+  const buf = await file.arrayBuffer();
+  let binary = "";
+  const bytes = new Uint8Array(buf);
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
 function AnalyzePage() {
   const { demo } = Route.useSearch();
   const navigate = useNavigate();
   const run = useServerFn(runAnalysis);
+  const extractPdf = useServerFn(extractFromPdf);
+  const extractImg = useServerFn(extractFromImage);
+  const lookup = useServerFn(lookupCompany);
 
+  const [mode, setMode] = useState<Mode>("text");
   const [text, setText] = useState(demo ? DEMO_JD : "");
+  const [companyQuery, setCompanyQuery] = useState("");
+  const [pdfName, setPdfName] = useState<string | null>(null);
+  const [imgName, setImgName] = useState<string | null>(null);
+  const [extracting, setExtracting] = useState(false);
+
   const [company, setCompany] = useState(demo ? "Sample Startup Inc." : "");
   const [roleTitle, setRoleTitle] = useState("");
   const [offeredSalary, setOfferedSalary] = useState("");
@@ -59,10 +86,82 @@ function AnalyzePage() {
   const [yearsExperience, setYearsExperience] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  async function handlePdf(file: File) {
+    if (file.size > 12 * 1024 * 1024) {
+      toast.error("PDF is too large (max 12MB).");
+      return;
+    }
+    setExtracting(true);
+    setPdfName(file.name);
+    try {
+      const base64 = await fileToBase64(file);
+      const { text: extracted } = await extractPdf({
+        data: { base64, filename: file.name },
+      });
+      if (extracted.trim().length < 40) {
+        toast.error("Couldn't read text from that PDF. Try a screenshot instead.");
+      } else {
+        setText(extracted);
+        toast.success(`Pulled ${extracted.length.toLocaleString()} chars from ${file.name}`);
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("PDF parse failed.");
+    } finally {
+      setExtracting(false);
+    }
+  }
+
+  async function handleImage(file: File) {
+    if (file.size > 12 * 1024 * 1024) {
+      toast.error("Image is too large (max 12MB).");
+      return;
+    }
+    setExtracting(true);
+    setImgName(file.name);
+    try {
+      const base64 = await fileToBase64(file);
+      const { text: extracted } = await extractImg({
+        data: { base64, mimeType: file.type || "image/png" },
+      });
+      if (extracted.trim().length < 20) {
+        toast.error("No readable text found in the image.");
+      } else {
+        setText(extracted);
+        toast.success("Transcribed screenshot — review below, then run analysis.");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Image OCR failed.");
+    } finally {
+      setExtracting(false);
+    }
+  }
+
+  async function handleLookup() {
+    if (companyQuery.trim().length < 2) {
+      toast.error("Enter a company name or URL.");
+      return;
+    }
+    setExtracting(true);
+    try {
+      const { text: extracted } = await lookup({ data: { query: companyQuery } });
+      setText(extracted);
+      if (!company) setCompany(companyQuery);
+      toast.success("Loaded company brief — review below, then run analysis.");
+    } catch (err) {
+      console.error(err);
+      const msg = err instanceof Error ? err.message : "Lookup failed.";
+      toast.error(msg);
+    } finally {
+      setExtracting(false);
+    }
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (text.trim().length < 40) {
-      toast.error("Paste at least a few sentences of the job description.");
+      toast.error("Need at least a few sentences before we can analyze.");
       return;
     }
     setSubmitting(true);
@@ -93,6 +192,13 @@ function AnalyzePage() {
     }
   }
 
+  const modeTabs: { id: Mode; label: string; icon: typeof Type }[] = [
+    { id: "text", label: "Paste text", icon: Type },
+    { id: "pdf", label: "Upload PDF", icon: FileText },
+    { id: "image", label: "Screenshot", icon: ImageIcon },
+    { id: "company", label: "Company URL", icon: Building2 },
+  ];
+
   return (
     <main className="min-h-screen bg-paper">
       <SiteNav solid />
@@ -105,15 +211,16 @@ function AnalyzePage() {
             className="mt-4 font-display text-4xl sm:text-5xl md:text-6xl text-ink"
             style={{ letterSpacing: "-0.035em", lineHeight: 0.95 }}
           >
-            Paste the job. We&apos;ll read between the{" "}
+            Paste, drop, or look up. We&apos;ll read between the{" "}
             <span className="italic" style={{ color: "var(--heading-accent)" }}>
               lines.
             </span>
           </h1>
           <p className="mt-4 text-body max-w-2xl">
-            Drop the job description, offer letter, or HR chat. Eight specialist
-            agents will analyze toxicity, burnout, salary fairness, ghost-hiring
-            signals, and write the questions you should ask back.
+            Bring the job description, offer letter, recruiter screenshot, or
+            just a company URL. Eight specialist agents analyze toxicity,
+            burnout, salary fairness, ghost-hiring signals, and write the
+            questions you should ask back.
           </p>
         </header>
 
@@ -121,54 +228,110 @@ function AnalyzePage() {
           onSubmit={onSubmit}
           className="rounded-2xl border border-ink/10 bg-white p-6 sm:p-8 shadow-sm"
         >
-          <label className="block text-sm font-medium text-ink mb-2">
-            Job description / offer letter / HR chat
+          {/* Mode tabs */}
+          <div className="mb-6 grid grid-cols-2 sm:grid-cols-4 gap-2 p-1 rounded-xl bg-cream/60 border border-ink/10">
+            {modeTabs.map((t) => {
+              const Icon = t.icon;
+              const active = mode === t.id;
+              return (
+                <button
+                  type="button"
+                  key={t.id}
+                  onClick={() => setMode(t.id)}
+                  className={`inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
+                    active
+                      ? "bg-white text-ink shadow-sm border border-ink/10"
+                      : "text-ink/60 hover:text-ink"
+                  }`}
+                >
+                  <Icon size={14} />
+                  {t.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Mode-specific input */}
+          {mode === "pdf" && (
+            <FileDrop
+              accept="application/pdf"
+              label={pdfName ?? "Drop a PDF offer letter or JD"}
+              hint="Up to 12MB. We extract text on the server — file is not stored."
+              busy={extracting}
+              onFile={handlePdf}
+            />
+          )}
+          {mode === "image" && (
+            <FileDrop
+              accept="image/png,image/jpeg,image/webp"
+              label={imgName ?? "Drop a screenshot (PNG / JPG / WEBP)"}
+              hint="Gemini Vision reads the text — recruiter chats, LinkedIn posts, anything."
+              busy={extracting}
+              onFile={handleImage}
+            />
+          )}
+          {mode === "company" && (
+            <div className="rounded-xl border border-ink/15 bg-cream/40 p-4">
+              <label className="block text-sm font-medium text-ink mb-2">
+                Company URL or name
+              </label>
+              <div className="flex gap-2">
+                <input
+                  value={companyQuery}
+                  onChange={(e) => setCompanyQuery(e.target.value)}
+                  placeholder="acmecorp.com  or  Acme Corp"
+                  className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2.5 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-heading/40"
+                />
+                <button
+                  type="button"
+                  onClick={handleLookup}
+                  disabled={extracting}
+                  className="inline-flex items-center gap-2 rounded-lg bg-ink px-4 py-2.5 text-sm font-medium text-cream hover:bg-ink-hover disabled:opacity-60"
+                >
+                  {extracting ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Upload size={14} />
+                  )}
+                  Fetch
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-body/80">
+                URLs are fetched and stripped to text. Plain company names use
+                public-knowledge AI brief.
+              </p>
+            </div>
+          )}
+
+          <label className="mt-6 block text-sm font-medium text-ink mb-2">
+            {mode === "text"
+              ? "Job description / offer letter / HR chat"
+              : "Extracted text (edit if needed)"}
           </label>
           <textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="Paste the full job posting here..."
+            placeholder={
+              mode === "text"
+                ? "Paste the full job posting here..."
+                : "Extracted text will appear here..."
+            }
             className="w-full min-h-[260px] rounded-xl border border-ink/15 bg-cream/40 px-4 py-3 text-sm text-ink font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-heading/40 focus:border-heading/40"
             required
           />
 
           <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Field
-              label="Company (optional)"
-              value={company}
-              onChange={setCompany}
-              placeholder="Acme Corp"
-            />
-            <Field
-              label="Role title (optional)"
-              value={roleTitle}
-              onChange={setRoleTitle}
-              placeholder="Senior Engineer"
-            />
-            <Field
-              label="Offered salary (optional)"
-              value={offeredSalary}
-              onChange={setOfferedSalary}
-              placeholder="$120k base + equity"
-            />
-            <Field
-              label="Location (optional)"
-              value={location}
-              onChange={setLocation}
-              placeholder="Remote, US"
-            />
-            <Field
-              label="Your years of experience (optional)"
-              value={yearsExperience}
-              onChange={setYearsExperience}
-              placeholder="5"
-            />
+            <Field label="Company (optional)" value={company} onChange={setCompany} placeholder="Acme Corp" />
+            <Field label="Role title (optional)" value={roleTitle} onChange={setRoleTitle} placeholder="Senior Engineer" />
+            <Field label="Offered salary (optional)" value={offeredSalary} onChange={setOfferedSalary} placeholder="$120k base + equity" />
+            <Field label="Location (optional)" value={location} onChange={setLocation} placeholder="Remote, US" />
+            <Field label="Your years of experience (optional)" value={yearsExperience} onChange={setYearsExperience} placeholder="5" />
           </div>
 
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <button
               type="submit"
-              disabled={submitting}
+              disabled={submitting || extracting}
               className="inline-flex items-center gap-2 rounded-full bg-ink px-6 py-3.5 text-sm font-medium text-cream transition-colors hover:bg-ink-hover disabled:opacity-60"
             >
               {submitting ? (
@@ -180,7 +343,7 @@ function AnalyzePage() {
                 <>Run analysis →</>
               )}
             </button>
-            {!demo && (
+            {mode === "text" && !demo && (
               <button
                 type="button"
                 onClick={() => {
@@ -201,6 +364,60 @@ function AnalyzePage() {
         </form>
       </div>
     </main>
+  );
+}
+
+function FileDrop({
+  accept,
+  label,
+  hint,
+  busy,
+  onFile,
+}: {
+  accept: string;
+  label: string;
+  hint: string;
+  busy: boolean;
+  onFile: (file: File) => void;
+}) {
+  const [dragging, setDragging] = useState(false);
+  return (
+    <label
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        const f = e.dataTransfer.files?.[0];
+        if (f) onFile(f);
+      }}
+      className={`flex flex-col items-center justify-center text-center cursor-pointer rounded-xl border-2 border-dashed px-6 py-10 transition-colors ${
+        dragging
+          ? "border-heading bg-heading/5"
+          : "border-ink/20 bg-cream/40 hover:bg-cream/60"
+      }`}
+    >
+      <input
+        type="file"
+        accept={accept}
+        className="hidden"
+        disabled={busy}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) onFile(f);
+        }}
+      />
+      {busy ? (
+        <Loader2 size={28} className="animate-spin text-ink/60" />
+      ) : (
+        <Upload size={28} className="text-ink/60" />
+      )}
+      <span className="mt-3 text-sm font-medium text-ink">{label}</span>
+      <span className="mt-1 text-xs text-body/80">{hint}</span>
+    </label>
   );
 }
 

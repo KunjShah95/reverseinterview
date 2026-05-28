@@ -342,7 +342,7 @@ export const runAnalysis = createServerFn({ method: "POST" })
           location: data.location,
           yearsExperience: data.yearsExperience,
         },
-        result: result as unknown as Record<string, unknown>,
+        result: JSON.parse(JSON.stringify(result)),
         status: "complete",
       })
       .select("id")
