@@ -1,11 +1,11 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
+import { useQuery } from "@tanstack/react-query";
+import { Loader2, ArrowRight } from "lucide-react";
 import SiteNav from "@/components/SiteNav";
 import SiteFooter from "@/components/SiteFooter";
-import { listAnalysesForSession } from "@/lib/analysis.functions";
-import { getSessionId } from "@/lib/session";
-import { ArrowRight } from "lucide-react";
+import { getSession, listUserAnalyses } from "@/lib/auth-functions";
 
 export const Route = createFileRoute("/history")({
   head: () => ({
@@ -26,12 +26,36 @@ type Row = {
 };
 
 function History() {
-  const list = useServerFn(listAnalysesForSession);
+  const navigate = useNavigate();
+  const fetchSession = useServerFn(getSession);
+  const list = useServerFn(listUserAnalyses);
   const [rows, setRows] = useState<Row[] | null>(null);
 
+  const { data: session, isLoading: sessionLoading } = useQuery({
+    queryKey: ["session"],
+    queryFn: () => fetchSession(),
+    refetchOnWindowFocus: true,
+    staleTime: 30_000,
+  });
+
   useEffect(() => {
-    list({ data: { sessionId: getSessionId() } }).then(setRows).catch(() => setRows([]));
-  }, [list]);
+    if (!sessionLoading && session && !session.authenticated) {
+      navigate({ to: "/login" });
+    }
+  }, [session, sessionLoading, navigate]);
+
+  useEffect(() => {
+    if (!session?.authenticated) return;
+    let cancelled = false;
+    list()
+      .then(setRows)
+      .catch(() => {
+        if (!cancelled) setRows([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [list, session]);
 
   return (
     <main className="min-h-screen bg-paper">
@@ -46,9 +70,7 @@ function History() {
             reports.
           </span>
         </h1>
-        <p className="mt-4 text-body">
-          Saved anonymously on this device. Clear your browser storage and they&apos;re gone.
-        </p>
+        <p className="mt-4 text-body">All your analyses in one place.</p>
 
         <div className="mt-10 space-y-3">
           {rows === null && <p className="text-body text-sm">Loading…</p>}
@@ -73,9 +95,7 @@ function History() {
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <p className="font-medium text-ink truncate">{r.company}</p>
-                  <p className="text-xs text-body">
-                    {new Date(r.createdAt).toLocaleString()}
-                  </p>
+                  <p className="text-xs text-body">{new Date(r.createdAt).toLocaleString()}</p>
                 </div>
                 {r.recommendation && (
                   <span
