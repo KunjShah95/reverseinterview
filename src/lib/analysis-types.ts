@@ -3,6 +3,28 @@
 
 export type Severity = "low" | "medium" | "high";
 export type Confidence = "low" | "medium" | "high";
+export type AnalysisStatus = "queued" | "running" | "complete" | "partial" | "failed";
+export type AgentStatus = "pending" | "running" | "complete" | "failed" | "skipped";
+export type AgentId =
+  | "culture"
+  | "burnout"
+  | "salary"
+  | "ghost"
+  | "negotiation"
+  | "reverse"
+  | "lie"
+  | "simulation"
+  | "critic"
+  | "orchestrator";
+
+export type AgentProgress = {
+  status: AgentStatus;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+};
+
+export type AnalysisProgress = Record<AgentId, AgentProgress>;
 
 export type ToxicityFlag = {
   phrase: string;
@@ -93,6 +115,13 @@ export type Orchestrator = {
   topGreens: string[];
 };
 
+export type CriticAgent = {
+  unsupportedClaims: string[];
+  contradictions: string[];
+  confidenceWarnings: string[];
+  summary: string;
+};
+
 export type AnalysisResult = {
   company: string;
   roleTitle: string;
@@ -104,5 +133,14 @@ export type AnalysisResult = {
   reverse: ReverseAgent;
   lie: LieAgent;
   simulation: SimulationAgent;
+  critic?: CriticAgent;
   orchestrator: Orchestrator;
+};
+
+export type PartialAnalysisResult = Partial<
+  Omit<AnalysisResult, "orchestrator">
+> & {
+  company?: string;
+  roleTitle?: string;
+  orchestrator?: Orchestrator;
 };

@@ -1,12 +1,224 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { callStructured, callText } from "./ai-gateway.server";
+import type { OcrSummary } from "./ocr-types";
+import { createCanvas, loadImage } from "@napi-rs/canvas";
 
-const GATEWAY_URL = "https://ai.gateway.lovable.dev/v1/chat/completions";
+const EXA_SEARCH_URL = "https://api.exa.ai/search";
+const TAVILY_SEARCH_URL = "https://api.tavily.com/search";
+const OCR_MAX_DIMENSION = 1800;
+const OCR_LOW_CONFIDENCE = 55;
 
-function getApiKey() {
-  const key = process.env.LOVABLE_API_KEY;
-  if (!key) throw new Error("LOVABLE_API_KEY is not configured");
-  return key;
+type TesseractWorkerResult = {
+  data: {
+    text?: string;
+    confidence?: number;
+    words?: Array<unknown>;
+  };
+};
+
+type TesseractWorker = {
+  recognize(input: string): Promise<TesseractWorkerResult>;
+};
+
+let tesseractWorkerPromise: Promise<TesseractWorker> | null = null;
+
+type SearchHit = {
+  url: string;
+  title?: string;
+  text: string;
+  source: "exa" | "tavily";
+};
+
+function getEnv(name: string): string | null {
+  const value = process.env[name]?.trim();
+  return value ? value : null;
+}
+
+function normalizeDomain(input: string): string | null {
+  try {
+    const url = new URL(/^https?:\/\//i.test(input) ? input : `https://${input}`);
+    return url.hostname.replace(/^www\./i, "");
+  } catch {
+    return null;
+  }
+}
+
+function collectSearchText(value: {
+  text?: string | null;
+  summary?: string | null;
+  content?: string | null;
+  raw_content?: string | null;
+  highlights?: string[] | null;
+}): string {
+  return [value.summary, value.text, value.content, value.raw_content, (value.highlights ?? []).join("\n")]
+    .filter((part): part is string => Boolean(part && part.trim()))
+    .join("\n")
+    .trim();
+}
+
+async function getTesseractWorker() {
+  if (!tesseractWorkerPromise) {
+    tesseractWorkerPromise = (async () => {
+      const mod = await import("tesseract.js");
+      const createWorker = mod.createWorker as unknown as (lang: string) => Promise<TesseractWorker>;
+      const worker = await createWorker("eng");
+      return worker;
+    })();
+  }
+  return tesseractWorkerPromise;
+}
+
+async function preprocessImageDataUrl(dataUrl: string): Promise<string> {
+  const image = await loadImage(dataUrl);
+  const scale = Math.min(1, OCR_MAX_DIMENSION / Math.max(image.width, image.height));
+  const width = Math.max(1, Math.round(image.width * scale));
+  const height = Math.max(1, Math.round(image.height * scale));
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(image, 0, 0, width, height);
+
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i] ?? 0;
+    const g = data[i + 1] ?? 0;
+    const b = data[i + 2] ?? 0;
+    const gray = Math.round(r * 0.299 + g * 0.587 + b * 0.114);
+    const normalized = gray > 186 ? 255 : gray < 96 ? 0 : gray;
+    data[i] = normalized;
+    data[i + 1] = normalized;
+    data[i + 2] = normalized;
+  }
+  ctx.putImageData(imageData, 0, 0);
+  return canvas.toDataURL("image/png");
+}
+
+async function ocrImageDataUrl(dataUrl: string): Promise<{ text: string; confidence: number; wordCount: number }> {
+  const worker = await getTesseractWorker();
+  const result = await worker.recognize(dataUrl);
+  const text = String(result?.data?.text ?? "").trim();
+  const confidence = Number(result?.data?.confidence ?? 0);
+  const wordCount = Array.isArray(result?.data?.words) ? result.data.words.length : text.split(/\s+/).filter(Boolean).length;
+  return { text, confidence: Number.isFinite(confidence) ? confidence : 0, wordCount };
+}
+
+async function renderPdfPagesToImages(base64: string, fromPage: number, toPage: number) {
+  const bytes = base64ToBytes(base64);
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const pdf = await pdfjs.getDocument({ data: bytes, useWorkerFetch: false, isEvalSupported: false }).promise;
+  const images: Array<{ page: number; dataUrl: string }> = [];
+
+  for (let pageNumber = fromPage; pageNumber <= toPage; pageNumber++) {
+    const page = await pdf.getPage(pageNumber);
+    const viewport = page.getViewport({ scale: 2.0 });
+    const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+    const ctx = canvas.getContext("2d");
+    await page.render({ canvasContext: ctx as unknown as CanvasRenderingContext2D, viewport }).promise;
+    images.push({ page: pageNumber, dataUrl: canvas.toDataURL("image/png") });
+    page.cleanup();
+  }
+
+  await pdf.destroy();
+  return images;
+}
+
+async function searchExa(query: string, includeDomains?: string[]): Promise<SearchHit[]> {
+  const apiKey = getEnv("EXA_API_KEY");
+  if (!apiKey) return [];
+
+  const res = await fetch(EXA_SEARCH_URL, {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query,
+      type: "auto",
+      category: "company",
+      numResults: 6,
+      includeDomains: includeDomains?.length ? includeDomains : undefined,
+      contents: {
+        text: true,
+        highlights: true,
+        summary: true,
+      },
+    }),
+  });
+
+  if (!res.ok) return [];
+
+  const json = (await res.json()) as {
+    results?: Array<{
+      url?: string;
+      title?: string;
+      text?: string;
+      summary?: string;
+      highlights?: string[];
+    }>;
+  };
+
+  return (json.results ?? [])
+    .map((result) => {
+      if (!result.url) return null;
+      const text = collectSearchText(result);
+      if (!text) return null;
+      return {
+        url: result.url,
+        title: result.title,
+        text,
+        source: "exa" as const,
+      };
+    })
+    .filter((hit): hit is SearchHit => Boolean(hit));
+}
+
+async function searchTavily(query: string, includeDomains?: string[]): Promise<SearchHit[]> {
+  const apiKey = getEnv("TAVILY_API_KEY");
+  if (!apiKey) return [];
+
+  const res = await fetch(TAVILY_SEARCH_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query,
+      search_depth: "basic",
+      max_results: 6,
+      include_answer: false,
+      include_raw_content: true,
+      include_domains: includeDomains?.length ? includeDomains : undefined,
+      include_favicon: false,
+    }),
+  });
+
+  if (!res.ok) return [];
+
+  const json = (await res.json()) as {
+    results?: Array<{
+      url?: string;
+      title?: string;
+      content?: string;
+      raw_content?: string;
+    }>;
+  };
+
+  return (json.results ?? [])
+    .map((result) => {
+      if (!result.url) return null;
+      const text = collectSearchText(result);
+      if (!text) return null;
+      return {
+        url: result.url,
+        title: result.title,
+        text,
+        source: "tavily" as const,
+      };
+    })
+    .filter((hit): hit is SearchHit => Boolean(hit));
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -83,16 +295,49 @@ export const extractPdfPages = createServerFn({ method: "POST" })
       const { text } = await extractText(pdf, { mergePages: false });
       const allPages = Array.isArray(text) ? text : [String(text)];
       const slice = allPages.slice(data.fromPage - 1, data.toPage);
+
+      const extracted = slice.join("\n\n").trim();
+      if (extracted.length >= 40) {
+        return {
+          text: extracted.slice(0, 80_000),
+          pagesExtracted: slice.length,
+          method: "text-extract" as const,
+          confidence: 100,
+          warnings: [] as string[],
+        };
+      }
+
+      const renderedPages = await renderPdfPagesToImages(data.base64, data.fromPage, data.toPage);
+      const ocrPages: string[] = [];
+      const confidences: number[] = [];
+      const warnings: string[] = ["The PDF appears image-only, so open-source OCR was used."];
+
+      for (const page of renderedPages) {
+        const preprocessed = await preprocessImageDataUrl(page.dataUrl);
+        const result = await ocrImageDataUrl(preprocessed);
+        if (result.text) {
+          ocrPages.push(`--- PAGE ${page.page} ---\n${result.text}`);
+        }
+        confidences.push(result.confidence);
+      }
+
+      const averageConfidence = confidences.length
+        ? confidences.reduce((sum, value) => sum + value, 0) / confidences.length
+        : 0;
+
       return {
-        text: slice.join("\n\n").slice(0, 80_000),
-        pagesExtracted: slice.length,
+        text: ocrPages.join("\n\n").slice(0, 80_000),
+        pagesExtracted: renderedPages.length,
+        method: "tesseract" as const,
+        confidence: Math.round(averageConfidence),
+        warnings,
       };
     } catch (err) {
       throw new Error(classifyPdfError(err));
     }
   });
 
-/** OCR / interpret a screenshot via Gemini vision. */
+/** OCR / interpret a screenshot via open-source OCR only (no Groq/vision fallback). */
 export const extractFromImage = createServerFn({ method: "POST" })
   .inputValidator(
     z.object({
@@ -101,41 +346,24 @@ export const extractFromImage = createServerFn({ method: "POST" })
     })
   )
   .handler(async ({ data }) => {
-    const apiKey = getApiKey();
     const dataUrl = `data:${data.mimeType};base64,${data.base64}`;
-    const res = await fetch(GATEWAY_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are an OCR + transcription system. Extract ALL readable text from the image verbatim. If it's a job description, offer letter, or HR chat, preserve structure (headings, bullets, salary numbers). Return ONLY the extracted text — no commentary.",
-          },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "Transcribe everything readable in this image." },
-              { type: "image_url", image_url: { url: dataUrl } },
-            ],
-          },
-        ],
-      }),
-    });
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      throw new Error(`Vision extract failed (${res.status}): ${t.slice(0, 200)}`);
+    const preprocessed = await preprocessImageDataUrl(dataUrl);
+    const result = await ocrImageDataUrl(preprocessed);
+    const warnings: string[] = [];
+
+    if (result.confidence < OCR_LOW_CONFIDENCE || result.text.length < 20) {
+      warnings.push(
+        "Open-source OCR confidence is low; the extracted text may be incomplete or inaccurate. Please review and edit before analysis."
+      );
     }
-    const json = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
+
+    return {
+      text: result.text.slice(0, 40_000),
+      method: "tesseract" as const,
+      confidence: Math.round(result.confidence),
+      warnings,
+      averageWordCount: result.wordCount,
     };
-    const text = json.choices?.[0]?.message?.content ?? "";
-    return { text: text.slice(0, 40_000) };
   });
 
 function stripHtml(html: string): string {
@@ -160,8 +388,7 @@ async function fetchPage(url: string, timeoutMs = 8000): Promise<string | null> 
   try {
     const res = await fetch(url, {
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (compatible; ReverseHireBot/1.0; +https://lovable.dev)",
+        "User-Agent": "Mozilla/5.0 (compatible; OfferGuardAI/1.0)",
         Accept: "text/html,application/xhtml+xml",
       },
       redirect: "follow",
@@ -214,19 +441,19 @@ export const lookupCompany = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const q = data.query.trim();
     const looksLikeUrl = /^https?:\/\//i.test(q) || /^[\w-]+(\.[\w-]+)+/i.test(q);
-    const apiKey = getApiKey();
+    const base = looksLikeUrl ? (/^https?:\/\//i.test(q) ? q : `https://${q}`).replace(/\/+$/, "") : null;
+    const origin = base ? new URL(base).origin : null;
+    const hostname = origin ? normalizeDomain(origin) : null;
+    const includeDomains = hostname ? [hostname] : undefined;
 
-    const buckets: { url: string; html: string }[] = [];
+    const sourceMap = new Map<string, { url: string; text: string }>();
+    const addSource = (url: string, text: string) => {
+      const cleaned = text.trim();
+      if (!cleaned || cleaned.length < 40 || sourceMap.has(url)) return;
+      sourceMap.set(url, { url, text: cleaned.slice(0, 4000) });
+    };
 
-    if (looksLikeUrl) {
-      const base = (/^https?:\/\//i.test(q) ? q : `https://${q}`).replace(/\/+$/, "");
-      let origin: string;
-      try {
-        origin = new URL(base).origin;
-      } catch {
-        throw new Error(`"${q}" is not a valid URL.`);
-      }
-
+    if (looksLikeUrl && origin) {
       const candidatePaths = [
         "",
         "/about",
@@ -240,84 +467,47 @@ export const lookupCompany = createServerFn({ method: "POST" })
         "/life",
         "/team",
       ];
-      const tried = new Set<string>();
-      const fetches = await Promise.all(
-        candidatePaths.map(async (p) => {
-          const url = origin + p;
-          if (tried.has(url)) return null;
-          tried.add(url);
-          const html = await fetchPage(url);
-          return html ? { url, html } : null;
-        })
-      );
-      for (const f of fetches) if (f) buckets.push(f);
 
-      if (buckets.length === 0) {
-        throw new Error(
-          `Couldn't reach ${origin}. The site may block bots — try pasting the JD directly.`
-        );
+      for (const p of candidatePaths) {
+        const url = origin + p;
+        const html = await fetchPage(url);
+        if (html) addSource(url, stripHtml(html));
       }
     }
 
-    // Strip each fetched page and tag it so the AI can attribute content.
-    const labelled = buckets
-      .map(({ url, html }) => {
-        const text = stripHtml(html).slice(0, 4000);
-        if (text.length < 80) return null;
-        return `--- PAGE: ${url} ---\n${text}`;
-      })
-      .filter((x): x is string => Boolean(x))
+    const searchQueries = looksLikeUrl
+      ? [q, `${hostname ?? q} about`, `${hostname ?? q} careers`]
+      : [q, `${q} company`, `${q} about`, `${q} careers`, `${q} values`, `${q} culture`];
+
+    const searchHits = (
+      await Promise.all(
+        searchQueries.flatMap((query) => [
+          searchExa(query, includeDomains),
+          searchTavily(query, includeDomains),
+        ])
+      )
+    ).flat();
+
+    for (const hit of searchHits) {
+      addSource(hit.url, [hit.title, hit.text].filter(Boolean).join("\n"));
+    }
+
+    if (looksLikeUrl && origin && sourceMap.size === 0) {
+      throw new Error(
+        `Couldn't reach ${origin}. The site may block bots — try pasting the JD directly.`
+      );
+    }
+
+    const labelled = [...sourceMap.values()]
+      .map(({ url, text }) => `--- SOURCE: ${url} ---\n${text}`)
       .join("\n\n")
       .slice(0, 24_000);
 
     const userPrompt = labelled
-      ? `Source pages scraped from the company website. Extract verbatim snippets (1-2 sentences) for each bucket. Mark "sourcesUsed" with the URLs you actually relied on. Be candid about red flags (vague values, generic culture talk, unpaid-equity language).\n\n${labelled}`
+      ? `Source pages and search results for the company. Extract verbatim snippets (1-2 sentences) for each bucket. Mark "sourcesUsed" with the URLs you actually relied on. Be candid about red flags (vague values, generic culture talk, unpaid-equity language).\n\n${labelled}`
       : `Write a candid public-knowledge brief on "${q}" so a candidate can evaluate it. Include what they do, size estimate, known culture themes (good and bad), reputation cues. If unknown, say so plainly. Leave aboutSnippets/valuesSnippets/benefitsSnippets empty if not from a source.`;
 
-    const res = await fetch(GATEWAY_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a candidate-side research analyst. Summarize a company crisply from supplied web pages or public knowledge. Quote verbatim where possible. Never invent benefits or values that aren't supported.",
-          },
-          { role: "user", content: userPrompt },
-        ],
-        tools: [
-          {
-            type: "function",
-            function: {
-              name: "company_brief",
-              description: "Structured brief about the company.",
-              parameters: lookupSchema,
-            },
-          },
-        ],
-        tool_choice: { type: "function", function: { name: "company_brief" } },
-      }),
-    });
-
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      throw new Error(`Company lookup failed (${res.status}): ${t.slice(0, 200)}`);
-    }
-    const json = (await res.json()) as {
-      choices?: Array<{
-        message?: { tool_calls?: Array<{ function?: { arguments: string } }> };
-      }>;
-    };
-    const argsStr = json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
-    if (!argsStr) {
-      throw new Error("Company lookup returned no structured brief.");
-    }
-    let parsed: {
+    const { arguments: parsed } = await callStructured<{
       companyName: string;
       summary: string;
       aboutSnippets?: string[];
@@ -327,12 +517,19 @@ export const lookupCompany = createServerFn({ method: "POST" })
       openRoleHints?: string[];
       reputationThemes?: string[];
       sourcesUsed?: string[];
-    };
-    try {
-      parsed = JSON.parse(argsStr);
-    } catch {
-      throw new Error("Company lookup returned malformed JSON.");
-    }
+    }>({
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a candidate-side research analyst. Summarize a company crisply from supplied web pages or public knowledge. Quote verbatim where possible. Never invent benefits or values that aren't supported.",
+        },
+        { role: "user", content: userPrompt },
+      ],
+      toolName: "company_brief",
+      toolDescription: "Structured brief about the company.",
+      parameters: lookupSchema,
+    });
 
     // Re-flatten into the source text the analysis agents will consume.
     const sections: string[] = [];
@@ -398,57 +595,24 @@ export type DocTypeResult = {
 export const detectDocType = createServerFn({ method: "POST" })
   .inputValidator(z.object({ text: z.string().min(20).max(20_000) }))
   .handler(async ({ data }): Promise<DocTypeResult> => {
-    const apiKey = getApiKey();
-    const res = await fetch(GATEWAY_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-flash-lite",
-        messages: [
-          {
-            role: "system",
-            content:
-              "Classify the document type. Job description = public posting describing a role. Offer letter = personalized offer with salary, start date, equity terms addressed to a candidate. Recruiter chat = informal back-and-forth messages. Company brief = general company info, not a specific role.",
-          },
-          {
-            role: "user",
-            content: `Classify this:\n\n"""\n${data.text.slice(0, 6000)}\n"""`,
-          },
-        ],
-        tools: [
-          {
-            type: "function",
-            function: {
-              name: "classify_document",
-              description: "Tag the document type.",
-              parameters: docTypeSchema,
-            },
-          },
-        ],
-        tool_choice: { type: "function", function: { name: "classify_document" } },
-      }),
+    const { arguments: parsed } = await callStructured<DocTypeResult>({
+      messages: [
+        {
+          role: "system",
+          content:
+            "Classify the document type. Job description = public posting describing a role. Offer letter = personalized offer with salary, start date, equity terms addressed to a candidate. Recruiter chat = informal back-and-forth messages. Company brief = general company info, not a specific role.",
+        },
+        {
+          role: "user",
+          content: `Classify this:\n\n"""\n${data.text.slice(0, 6000)}\n"""`,
+        },
+      ],
+      toolName: "classify_document",
+      toolDescription: "Tag the document type.",
+      parameters: docTypeSchema,
     });
-    if (!res.ok) {
-      return {
-        docType: "unknown",
-        confidence: "low",
-        reason: "Classifier unavailable; proceeding without type detection.",
-      };
-    }
-    const json = (await res.json()) as {
-      choices?: Array<{
-        message?: { tool_calls?: Array<{ function?: { arguments: string } }> };
-      }>;
-    };
-    const argsStr = json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
-    if (!argsStr) {
-      return { docType: "unknown", confidence: "low", reason: "No classification returned." };
-    }
     try {
-      return JSON.parse(argsStr) as DocTypeResult;
+      return parsed;
     } catch {
       return { docType: "unknown", confidence: "low", reason: "Malformed classifier output." };
     }

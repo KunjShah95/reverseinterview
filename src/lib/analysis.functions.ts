@@ -1,9 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
+import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { callStructured } from "./ai-gateway.server";
 import type {
+  AnalysisProgress,
   AnalysisResult,
+  AnalysisStatus,
   CultureAgent,
   BurnoutAgent,
   SalaryAgent,
@@ -13,7 +16,10 @@ import type {
   LieAgent,
   SimulationAgent,
   Orchestrator,
+  CriticAgent,
+  PartialAnalysisResult,
 } from "./analysis-types";
+import { createInitialProgress, runSwarmJob, type SwarmPatch } from "./analysis-swarm.server";
 
 const baseContext = (text: string, input: Record<string, unknown>) =>
   `You are analyzing a job opportunity for a candidate. Cite EXACT short quotes from the source as evidence. Never make definitive accusations — use "possible interpretation". Mark confidence honestly.
@@ -194,15 +200,25 @@ const orchestratorSchema = {
   ],
 };
 
+const criticSchema = {
+  type: "object",
+  properties: {
+    unsupportedClaims: { type: "array", items: { type: "string" } },
+    contradictions: { type: "array", items: { type: "string" } },
+    confidenceWarnings: { type: "array", items: { type: "string" } },
+    summary: { type: "string" },
+  },
+  required: ["unsupportedClaims", "contradictions", "confidenceWarnings", "summary"],
+};
+
 async function agent<T>(
   name: string,
   description: string,
   systemPrompt: string,
   userPrompt: string,
-  schema: Record<string, unknown>
+  schema: Record<string, unknown>,
 ): Promise<T> {
   const { arguments: args } = await callStructured<T>({
-    model: "google/gemini-3-flash-preview",
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
@@ -214,126 +230,250 @@ async function agent<T>(
   return args;
 }
 
-export const runAnalysis = createServerFn({ method: "POST" })
-  .inputValidator(
-    z.object({
-      sourceText: z.string().min(40).max(20000),
-      company: z.string().max(200).optional(),
-      roleTitle: z.string().max(200).optional(),
-      offeredSalary: z.string().max(100).optional(),
-      location: z.string().max(200).optional(),
-      yearsExperience: z.string().max(50).optional(),
-      sessionId: z.string().max(100).optional(),
+const analysisInputSchema = z.object({
+  sourceText: z.string().min(40).max(20000),
+  company: z.string().max(200).optional(),
+  roleTitle: z.string().max(200).optional(),
+  offeredSalary: z.string().max(100).optional(),
+  location: z.string().max(200).optional(),
+  yearsExperience: z.string().max(50).optional(),
+  sessionId: z.string().max(100).optional(),
+});
+
+type AnalysisInput = z.infer<typeof analysisInputSchema>;
+
+function jsonSafe<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function mergeProgress(
+  current: AnalysisProgress,
+  patch?: SwarmPatch["progress"],
+): AnalysisProgress {
+  if (!patch) return current;
+  return {
+    ...current,
+    ...Object.fromEntries(
+      Object.entries(patch).map(([agentId, progress]) => [
+        agentId,
+        { ...current[agentId as keyof AnalysisProgress], ...progress },
+      ]),
+    ),
+  } as AnalysisProgress;
+}
+
+async function markAnalysisFailed(analysisId: string, error: unknown) {
+  const message = error instanceof Error ? error.message : "Analysis failed.";
+  await supabaseAdmin
+    .from("analyses")
+    .update({
+      status: "failed",
+      error: message,
+      completed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     })
-  )
-  .handler(async ({ data }) => {
-    const ctx = baseContext(data.sourceText, {
-      company: data.company,
-      roleTitle: data.roleTitle,
-      offeredSalary: data.offeredSalary,
-      location: data.location,
-      yearsExperience: data.yearsExperience,
-    });
+    .eq("id", analysisId);
+}
 
-    const [culture, burnout, salary, ghost, negotiation, reverse, lie, simulation] =
-      await Promise.all([
-        agent<CultureAgent>(
-          "culture_analysis",
-          "Detect toxic, manipulative, or hidden-meaning phrases.",
-          "You are a workplace culture analyst. Identify suspicious phrases like 'fast-paced', 'wear many hats', 'family culture', 'rockstar', 'self-starter' and explain their possible hidden meanings.",
-          ctx,
-          cultureSchema
-        ),
-        agent<BurnoutAgent>(
-          "burnout_prediction",
-          "Estimate burnout & overtime risk.",
-          "You are a burnout analyst. Score 0-100 risk based on role overlap, on-call hints, urgency language, and unrealistic expectations.",
-          ctx,
-          burnoutSchema
-        ),
-        agent<SalaryAgent>(
-          "salary_fairness",
-          "Compare offered comp to market.",
-          "You are a compensation analyst. Estimate the market range for the role/level/location and assess fairness. If salary not provided or unknowable, say 'unknown' with low confidence.",
-          ctx,
-          salarySchema
-        ),
-        agent<GhostAgent>(
-          "ghost_hiring_detection",
-          "Detect fake-urgency / ghost hiring signals.",
-          "You are a hiring-integrity analyst. Look for fake urgency, vague responsibilities, repost cues, mass-hiring spam, suspiciously broad scope.",
-          ctx,
-          ghostSchema
-        ),
-        agent<NegotiationAgent>(
-          "negotiation_coach",
-          "Generate negotiation talking points & counter-offer.",
-          "You are an expert salary negotiator. Give 4-6 talking points, a counter-offer template paragraph, and 2-4 red-line items the candidate should not concede.",
-          ctx,
-          negotiationSchema
-        ),
-        agent<ReverseAgent>(
-          "reverse_interview_generator",
-          "Generate sharp interview questions for the candidate to ask back.",
-          "You are an interview coach. Generate 8-12 SHARP, SPECIFIC, NON-GENERIC questions the candidate should ask. Replace soft questions ('What's the culture like?') with concrete ones ('What percentage of roadmap deadlines slipped last quarter?').",
-          ctx,
-          reverseSchema
-        ),
-        agent<LieAgent>(
-          "hr_lie_detector",
-          "Find mismatches between stated claims and observable evidence in the same text.",
-          "You are an HR claim verifier. Find internal contradictions: claims in the text ('work-life balance', 'flat hierarchy') that are contradicted by other parts of the same text or by stated responsibilities. Return 0-5 mismatches.",
-          ctx,
-          lieSchema
-        ),
-        agent<SimulationAgent>(
-          "join_simulation",
-          "Predict 6mo / 1yr / 2yr experience after joining.",
-          "You are a career simulator. Predict the candidate's experience at 6 months, 1 year, and 2 years. Each phase needs a 1-2 sentence narrative and scores (0-100) for stress, growth, learning.",
-          ctx,
-          simulationSchema
-        ),
-      ]);
+async function startAnalysisSwarm(analysisId: string, input: AnalysisInput) {
+  const ctx = baseContext(input.sourceText, {
+    company: input.company,
+    roleTitle: input.roleTitle,
+    offeredSalary: input.offeredSalary,
+    location: input.location,
+    yearsExperience: input.yearsExperience,
+  });
+  let progress = createInitialProgress();
+  let result: PartialAnalysisResult = {
+    company: input.company || "Unknown company",
+    roleTitle: input.roleTitle || "Unknown role",
+  };
 
-    // Orchestrator merges everything into a final verdict.
-    const orchestrator = await agent<Orchestrator & { company: string; roleTitle: string }>(
-      "final_verdict",
-      "Merge all agent outputs into a final recommendation.",
-      "You are the senior reviewer. Read all sub-agent outputs and produce one TruthScore (0-100 per dimension), one recommendation (proceed/caution/avoid), one punchy 1-sentence verdict, top 3 risks, top 3 greens, plus the inferred company name and role title from the source.",
-      `SOURCE:\n"""\n${data.sourceText.slice(0, 4000)}\n"""\n\nAGENT OUTPUTS:\n${JSON.stringify(
-        { culture, burnout, salary, ghost, lie, simulation }
-      ).slice(0, 8000)}\n\nProvided context: ${JSON.stringify({
-        company: data.company,
-        roleTitle: data.roleTitle,
-      })}`,
-      orchestratorSchema
-    );
+  const persistPatch = async (patch: SwarmPatch) => {
+    progress = mergeProgress(progress, patch.progress);
+    if (patch.result) {
+      result = { ...result, ...patch.result };
+    }
 
-    const result: AnalysisResult = {
-      company: orchestrator.company || data.company || "Unknown company",
-      roleTitle: orchestrator.roleTitle || data.roleTitle || "Unknown role",
-      culture,
-      burnout,
-      salary,
-      ghost,
-      negotiation,
-      reverse,
-      lie,
-      simulation,
-      orchestrator: {
-        recommendation: orchestrator.recommendation,
-        verdict: orchestrator.verdict,
-        truthScore: orchestrator.truthScore,
-        topRisks: orchestrator.topRisks,
-        topGreens: orchestrator.topGreens,
+    const update: Record<string, unknown> = {
+      updated_at: new Date().toISOString(),
+      progress: jsonSafe(progress),
+      result: jsonSafe(result),
+    };
+    if (patch.status) update.status = patch.status;
+    if (patch.error !== undefined) update.error = patch.error;
+    if (patch.startedAt) update.started_at = patch.startedAt;
+    if (patch.completedAt) update.completed_at = patch.completedAt;
+    if (typeof result.company === "string") update.company = result.company;
+
+    const { error } = await supabaseAdmin.from("analyses").update(update).eq("id", analysisId);
+    if (error) throw new Error(error.message);
+  };
+
+  try {
+    await runSwarmJob({
+      analysisId,
+      input,
+      persistPatch,
+      specialistAgents: [
+        {
+          id: "culture",
+          run: () =>
+            agent<CultureAgent>(
+              "culture_analysis",
+              "Detect toxic, manipulative, or hidden-meaning phrases.",
+              "You are a workplace culture analyst. Identify suspicious phrases like 'fast-paced', 'wear many hats', 'family culture', 'rockstar', 'self-starter' and explain their possible hidden meanings.",
+              ctx,
+              cultureSchema,
+            ),
+        },
+        {
+          id: "burnout",
+          run: () =>
+            agent<BurnoutAgent>(
+              "burnout_prediction",
+              "Estimate burnout & overtime risk.",
+              "You are a burnout analyst. Score 0-100 risk based on role overlap, on-call hints, urgency language, and unrealistic expectations.",
+              ctx,
+              burnoutSchema,
+            ),
+        },
+        {
+          id: "salary",
+          run: () =>
+            agent<SalaryAgent>(
+              "salary_fairness",
+              "Compare offered comp to market.",
+              "You are a compensation analyst. Estimate the market range for the role/level/location and assess fairness. If salary not provided or unknowable, say 'unknown' with low confidence.",
+              ctx,
+              salarySchema,
+            ),
+        },
+        {
+          id: "ghost",
+          run: () =>
+            agent<GhostAgent>(
+              "ghost_hiring_detection",
+              "Detect fake-urgency / ghost hiring signals.",
+              "You are a hiring-integrity analyst. Look for fake urgency, vague responsibilities, repost cues, mass-hiring spam, suspiciously broad scope.",
+              ctx,
+              ghostSchema,
+            ),
+        },
+        {
+          id: "negotiation",
+          run: () =>
+            agent<NegotiationAgent>(
+              "negotiation_coach",
+              "Generate negotiation talking points & counter-offer.",
+              "You are an expert salary negotiator. Give 4-6 talking points, a counter-offer template paragraph, and 2-4 red-line items the candidate should not concede.",
+              ctx,
+              negotiationSchema,
+            ),
+        },
+        {
+          id: "reverse",
+          run: () =>
+            agent<ReverseAgent>(
+              "reverse_interview_generator",
+              "Generate sharp interview questions for the candidate to ask back.",
+              "You are an interview coach. Generate 8-12 SHARP, SPECIFIC, NON-GENERIC questions the candidate should ask. Replace soft questions ('What's the culture like?') with concrete ones ('What percentage of roadmap deadlines slipped last quarter?').",
+              ctx,
+              reverseSchema,
+            ),
+        },
+        {
+          id: "lie",
+          run: () =>
+            agent<LieAgent>(
+              "hr_lie_detector",
+              "Find mismatches between stated claims and observable evidence in the same text.",
+              "You are an HR claim verifier. Find internal contradictions: claims in the text ('work-life balance', 'flat hierarchy') that are contradicted by other parts of the same text or by stated responsibilities. Return 0-5 mismatches.",
+              ctx,
+              lieSchema,
+            ),
+        },
+        {
+          id: "simulation",
+          run: () =>
+            agent<SimulationAgent>(
+              "join_simulation",
+              "Predict 6mo / 1yr / 2yr experience after joining.",
+              "You are a career simulator. Predict the candidate's experience at 6 months, 1 year, and 2 years. Each phase needs a 1-2 sentence narrative and scores (0-100) for stress, growth, learning.",
+              ctx,
+              simulationSchema,
+            ),
+        },
+      ],
+      criticAgent: {
+        id: "critic",
+        run: ({ specialistResults, specialistErrors }) =>
+          agent<CriticAgent>(
+            "swarm_critic",
+            "Review specialist outputs for unsupported or overconfident claims.",
+            "You are a strict QA critic. Review the specialist agent outputs. Identify unsupported claims, contradictions, and any places where the confidence should be lower. Do not add new claims.",
+            `SOURCE:\n"""\n${input.sourceText.slice(0, 4000)}\n"""\n\nSPECIALIST OUTPUTS:\n${JSON.stringify(
+              specialistResults,
+            ).slice(0, 10000)}\n\nSPECIALIST ERRORS:\n${JSON.stringify(specialistErrors)}`,
+            criticSchema,
+          ),
       },
+      orchestratorAgent: {
+        id: "orchestrator",
+        run: async ({ specialistResults, specialistErrors, critic }) => {
+          const orchestrator = await agent<Orchestrator & { company: string; roleTitle: string }>(
+            "final_verdict",
+            "Merge all agent outputs into a final recommendation.",
+            "You are the senior reviewer. Read all available sub-agent outputs and critic feedback. Produce one TruthScore (0-100 per dimension), one recommendation (proceed/caution/avoid), one punchy 1-sentence verdict, top 3 risks, top 3 greens, plus the inferred company name and role title from the source. If some agents failed, rely only on available evidence and avoid overclaiming.",
+            `SOURCE:\n"""\n${input.sourceText.slice(0, 4000)}\n"""\n\nAGENT OUTPUTS:\n${JSON.stringify(
+              specialistResults,
+            ).slice(0, 10000)}\n\nCRITIC FEEDBACK:\n${JSON.stringify(
+              critic,
+            )}\n\nAGENT ERRORS:\n${JSON.stringify(
+              specialistErrors,
+            )}\n\nProvided context: ${JSON.stringify({
+              company: input.company,
+              roleTitle: input.roleTitle,
+            })}`,
+            orchestratorSchema,
+          );
+
+          return {
+            company: orchestrator.company || input.company || "Unknown company",
+            roleTitle: orchestrator.roleTitle || input.roleTitle || "Unknown role",
+            orchestrator: {
+              recommendation: orchestrator.recommendation,
+              verdict: orchestrator.verdict,
+              truthScore: orchestrator.truthScore,
+              topRisks: orchestrator.topRisks,
+              topGreens: orchestrator.topGreens,
+            },
+          };
+        },
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    await markAnalysisFailed(analysisId, error);
+  }
+}
+
+export const runAnalysis = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(analysisInputSchema)
+  .handler(async ({ data, context }) => {
+    const userId = (context as { userId?: string }).userId;
+    const progress = createInitialProgress();
+    const initialResult: PartialAnalysisResult = {
+      company: data.company || "Unknown company",
+      roleTitle: data.roleTitle || "Unknown role",
     };
 
     const { data: row, error } = await supabaseAdmin
       .from("analyses")
       .insert({
-        session_id: data.sessionId ?? null,
-        company: result.company,
+        user_id: userId ?? null,
+        company: data.company ?? null,
         source_type: "text",
         source_text: data.sourceText.slice(0, 20000),
         structured_input: {
@@ -342,15 +482,18 @@ export const runAnalysis = createServerFn({ method: "POST" })
           location: data.location,
           yearsExperience: data.yearsExperience,
         },
-        result: JSON.parse(JSON.stringify(result)),
-        status: "complete",
+        result: jsonSafe(initialResult),
+        progress: jsonSafe(progress),
+        status: "queued",
       })
       .select("id")
       .single();
 
     if (error || !row) {
-      throw new Error(`Failed to persist analysis: ${error?.message}`);
+      throw new Error(`Failed to create analysis job: ${error?.message}`);
     }
+
+    void startAnalysisSwarm(row.id as string, data);
 
     return { id: row.id as string };
   });
@@ -368,9 +511,13 @@ export const getAnalysis = createServerFn({ method: "GET" })
     return {
       id: row.id as string,
       company: row.company as string | null,
-      result: row.result as AnalysisResult | null,
-      status: row.status as string,
+      result: row.result as PartialAnalysisResult | AnalysisResult | null,
+      progress: row.progress as AnalysisProgress,
+      status: row.status as AnalysisStatus,
+      error: row.error as string | null,
       createdAt: row.created_at as string,
+      startedAt: row.started_at as string | null,
+      completedAt: row.completed_at as string | null,
     };
   });
 
@@ -379,7 +526,7 @@ export const listAnalysesForSession = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const { data: rows, error } = await supabaseAdmin
       .from("analyses")
-      .select("id, company, created_at, status, result")
+      .select("id, company, created_at, status, result, error")
       .eq("session_id", data.sessionId)
       .order("created_at", { ascending: false })
       .limit(50);
@@ -388,8 +535,9 @@ export const listAnalysesForSession = createServerFn({ method: "POST" })
       id: r.id as string,
       company: (r.company as string | null) ?? "Unknown",
       createdAt: r.created_at as string,
-      status: r.status as string,
+      status: r.status as AnalysisStatus,
+      error: r.error as string | null,
       recommendation:
-        (r.result as AnalysisResult | null)?.orchestrator?.recommendation ?? null,
+        (r.result as PartialAnalysisResult | null)?.orchestrator?.recommendation ?? null,
     }));
   });
