@@ -29,7 +29,7 @@ export const Route = createFileRoute("/")({
 
 function LandingPage() {
   return (
-    <main className="relative w-full min-h-screen sm:h-screen overflow-hidden bg-cream">
+    <main className="relative w-full min-h-screen lg:h-screen overflow-hidden bg-cream">
       {/* Hero image background */}
       <div className="absolute inset-0 -z-10">
         <img
