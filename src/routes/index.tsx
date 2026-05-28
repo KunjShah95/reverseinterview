@@ -75,7 +75,7 @@ function LandingPage() {
         <div className="mt-8 flex flex-wrap items-center gap-3">
           <Link
             to="/analyze"
-            className="inline-flex items-center gap-2 rounded-full bg-ink px-6 py-3.5 text-sm font-medium text-cream transition-colors hover:bg-ink-hover"
+            className="inline-flex items-center gap-2 rounded-full bg-ink px-6 py-3.5 text-sm font-medium text-cream shadow-lg shadow-ink/20 ring-1 ring-cream/20 transition-colors hover:bg-ink-hover"
           >
             Analyze a job
             <ArrowRight size={16} />
@@ -83,7 +83,7 @@ function LandingPage() {
           <Link
             to="/analyze"
             search={{ demo: 1 }}
-            className="inline-flex items-center gap-2 rounded-full border border-ink/20 bg-white/60 backdrop-blur-md px-6 py-3.5 text-sm font-medium text-ink transition-colors hover:bg-white/80"
+            className="inline-flex items-center gap-2 rounded-full border border-ink/30 bg-cream/80 backdrop-blur-md px-6 py-3.5 text-sm font-medium text-ink transition-colors hover:bg-cream"
           >
             See sample report
           </Link>
