@@ -1,13 +1,17 @@
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery } from "@tanstack/react-query";
+import { useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
   ShieldAlert,
   Quote,
   ArrowRight,
+  Download,
+  Loader2,
 } from "lucide-react";
+import { toast } from "sonner";
 import SiteNav from "@/components/SiteNav";
 import SiteFooter from "@/components/SiteFooter";
 import { getAnalysis } from "@/lib/analysis.functions";
