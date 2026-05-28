@@ -29,7 +29,7 @@ export const Route = createFileRoute("/")({
 
 function LandingPage() {
   return (
-    <main className="relative w-full min-h-screen sm:h-screen overflow-hidden bg-cream">
+    <main className="relative w-full min-h-screen lg:h-screen overflow-hidden bg-cream">
       {/* Hero image background */}
       <div className="absolute inset-0 -z-10">
         <img
@@ -75,7 +75,7 @@ function LandingPage() {
         <div className="mt-8 flex flex-wrap items-center gap-3">
           <Link
             to="/analyze"
-            className="inline-flex items-center gap-2 rounded-full bg-ink px-6 py-3.5 text-sm font-medium text-cream transition-colors hover:bg-ink-hover"
+            className="inline-flex items-center gap-2 rounded-full bg-ink px-6 py-3.5 text-sm font-medium text-cream shadow-lg shadow-ink/20 ring-1 ring-cream/20 transition-colors hover:bg-ink-hover"
           >
             Analyze a job
             <ArrowRight size={16} />
@@ -83,15 +83,15 @@ function LandingPage() {
           <Link
             to="/analyze"
             search={{ demo: 1 }}
-            className="inline-flex items-center gap-2 rounded-full border border-ink/20 bg-white/60 backdrop-blur-md px-6 py-3.5 text-sm font-medium text-ink transition-colors hover:bg-white/80"
+            className="inline-flex items-center gap-2 rounded-full border border-ink/30 bg-cream/80 backdrop-blur-md px-6 py-3.5 text-sm font-medium text-ink transition-colors hover:bg-cream"
           >
             See sample report
           </Link>
         </div>
       </section>
 
-      {/* Bottom-left CTA block */}
-      <section className="absolute left-4 right-4 sm:right-auto sm:left-6 md:left-10 bottom-6 sm:bottom-8 md:bottom-10 max-w-md">
+      {/* Bottom-left CTA block — flows in document on mobile, absolute on lg+ */}
+      <section className="relative mt-16 mb-10 mx-4 sm:mx-6 md:mx-10 lg:absolute lg:mt-0 lg:mb-0 lg:left-10 lg:right-auto lg:bottom-10 max-w-md rounded-2xl lg:rounded-none bg-ink/70 lg:bg-transparent backdrop-blur-md lg:backdrop-blur-none p-5 lg:p-0">
         <div className="flex items-center gap-2 mb-3">
           <span
             className="inline-block h-2 w-2 rounded-full"
