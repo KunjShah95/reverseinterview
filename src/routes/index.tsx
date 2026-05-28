@@ -90,8 +90,8 @@ function LandingPage() {
         </div>
       </section>
 
-      {/* Bottom-left CTA block */}
-      <section className="absolute left-4 right-4 sm:right-auto sm:left-6 md:left-10 bottom-6 sm:bottom-8 md:bottom-10 max-w-md">
+      {/* Bottom-left CTA block — flows in document on mobile, absolute on lg+ */}
+      <section className="relative mt-16 mb-10 mx-4 sm:mx-6 md:mx-10 lg:absolute lg:mt-0 lg:mb-0 lg:left-10 lg:right-auto lg:bottom-10 max-w-md rounded-2xl lg:rounded-none bg-ink/70 lg:bg-transparent backdrop-blur-md lg:backdrop-blur-none p-5 lg:p-0">
         <div className="flex items-center gap-2 mb-3">
           <span
             className="inline-block h-2 w-2 rounded-full"
