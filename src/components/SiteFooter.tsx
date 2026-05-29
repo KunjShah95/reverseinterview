@@ -35,9 +35,6 @@ export default function SiteFooter() {
           <Link to="/analyze" className="hover:text-ink transition-colors">
             Analyze
           </Link>
-          <Link to="/history" className="hover:text-ink transition-colors">
-            Saved
-          </Link>
         </nav>
       </div>
     </footer>

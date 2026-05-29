@@ -1,3 +1,4 @@
+import { ClerkProvider } from "@clerk/tanstack-react-start";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   Outlet,
@@ -33,6 +34,10 @@ function NotFoundComponent() {
   );
 }
 
+NotFoundComponent.head = () => ({
+  meta: [{ title: "Page Not Found — Reverse Interview AI" }],
+});
+
 function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   console.error(error);
   const router = useRouter();
@@ -40,9 +45,7 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="max-w-md text-center">
-        <h1 className="text-xl font-medium tracking-tight text-ink">
-          This page didn't load
-        </h1>
+        <h1 className="text-xl font-medium tracking-tight text-ink">This page didn't load</h1>
         <p className="mt-2 text-sm text-body">
           Something went wrong on our end. You can try refreshing or head back home.
         </p>
@@ -73,6 +76,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
+      { name: "theme-color", content: "#f5f1e8" },
       { title: "Reverse Interview AI — interview the company before you join" },
       {
         name: "description",
@@ -88,11 +92,12 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
-      { name: "twitter:site", content: "@reverseinterview" },
+      { name: "twitter:site", content: "@example" },
     ],
     links: [
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
       { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "" },
+      { rel: "manifest", href: "/manifest.json" },
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
       {
         rel: "stylesheet",
@@ -112,10 +117,52 @@ function RootShell({ children }: { children: React.ReactNode }) {
     <html lang="en">
       <head>
         <HeadContent />
+        {/* JSON-LD structured data for basic organization info */}
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify({
+              "@context": "https://schema.org",
+              "@type": "Organization",
+              name: "Reverse Interview AI",
+              url: "https://example.com",
+              logo: "https://example.com/favicon.svg",
+              sameAs: [],
+            }),
+          }}
+        />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify({
+              "@context": "https://schema.org",
+              "@type": "WebApplication",
+              name: "Reverse Interview AI",
+              url: "https://example.com",
+              description:
+                "AI-powered job offer analysis. Upload a job post, offer letter, or HR chat. Get toxicity flags, burnout risk, salary fairness, and ghost-hiring signals.",
+              applicationCategory: "BusinessApplication",
+              operatingSystem: "Web",
+              offers: {
+                "@type": "Offer",
+                price: "0",
+                priceCurrency: "USD",
+              },
+            }),
+          }}
+        />
       </head>
       <body>
-        {children}
-        <Scripts />
+        <ClerkProvider>
+          <a
+            href="#main"
+            className="skip-link sr-only focus:not-sr-only absolute left-4 top-4 z-50 rounded-sm bg-white px-2 py-1 text-sm"
+          >
+            Skip to content
+          </a>
+          {children}
+          <Scripts />
+        </ClerkProvider>
       </body>
     </html>
   );

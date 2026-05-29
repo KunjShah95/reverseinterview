@@ -1,9 +1,0 @@
-node_modules
-dist
-.git
-.env
-*.log
-coverage
-/.vscode
-/.idea
-/.gitignore

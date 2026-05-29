@@ -44,8 +44,8 @@ const steps = [
 function HowItWorks() {
   return (
     <main className="min-h-screen bg-paper">
-      <SiteNav solid />
-      <section className="mx-auto max-w-4xl px-4 sm:px-6 md:px-10 pt-28 sm:pt-32 pb-16">
+      <SiteNav solid hideDashboard />
+      <section className="mx-auto max-w-4xl px-4 sm:px-6 md:px-10 pt-28 sm:pt-32 pb-16 text-center">
         <h1
           className="font-display text-4xl sm:text-5xl md:text-6xl text-ink"
           style={{ letterSpacing: "-0.035em", lineHeight: 0.95 }}
@@ -55,12 +55,12 @@ function HowItWorks() {
             process.
           </span>
         </h1>
-        <p className="mt-5 text-lg text-body max-w-2xl">
+        <p className="mt-5 text-lg text-body max-w-2xl mx-auto">
           A multi-agent pipeline that treats your decision the way companies treat
           theirs — with structured analysis, not vibes.
         </p>
 
-        <div className="mt-12 grid gap-6 md:grid-cols-2">
+        <div className="mt-12 grid gap-6 md:grid-cols-2 text-left">
           {steps.map((s) => (
             <article
               key={s.n}

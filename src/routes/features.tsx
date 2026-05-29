@@ -100,10 +100,10 @@ const otherFeatures = [
 function Features() {
   return (
     <main className="min-h-screen bg-paper">
-      <SiteNav solid />
-      <section className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pt-28 sm:pt-32 pb-20">
+      <SiteNav solid hideDashboard />
+      <section className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pt-28 sm:pt-32 pb-20 text-center">
         <h1
-          className="font-display text-4xl sm:text-5xl md:text-6xl text-ink"
+          className="font-display text-4xl sm:text-5xl md:text-6xl text-ink mx-auto"
           style={{ letterSpacing: "-0.035em", lineHeight: 0.95 }}
         >
           Eight agents.{" "}
@@ -111,12 +111,12 @@ function Features() {
             One verdict.
           </span>
         </h1>
-        <p className="mt-5 text-lg text-body max-w-2xl">
+        <p className="mt-5 text-lg text-body max-w-2xl mx-auto">
           Every job description, offer letter, or HR chat gets read by eight specialist AI agents in
           parallel. A senior reviewer merges their findings into a single TruthScore.
         </p>
 
-        <div className="mt-10 grid gap-4 sm:grid-cols-2">
+        <div className="mt-10 grid gap-4 sm:grid-cols-2 text-left">
           {agents.map(({ title, Icon, desc }) => (
             <article
               key={title}

@@ -20,8 +20,8 @@ export const Route = createFileRoute("/about")({
 function About() {
   return (
     <main className="min-h-screen bg-paper">
-      <SiteNav solid />
-      <section className="mx-auto max-w-3xl px-4 sm:px-6 md:px-10 pt-28 sm:pt-32 pb-20">
+      <SiteNav solid hideDashboard />
+      <section className="mx-auto max-w-3xl px-4 sm:px-6 md:px-10 pt-28 sm:pt-32 pb-20 text-center">
         <h1
           className="font-display text-4xl sm:text-5xl md:text-6xl text-ink"
           style={{ letterSpacing: "-0.035em", lineHeight: 0.95 }}
@@ -32,7 +32,7 @@ function About() {
           </span>
         </h1>
 
-        <div className="mt-10 space-y-6 text-body leading-relaxed">
+        <div className="mt-10 space-y-6 text-body leading-relaxed text-left">
           <p>
             Reverse Interview AI was built to fix an asymmetric information problem: companies
             research candidates extensively, but candidates often walk into an offer blind. Job

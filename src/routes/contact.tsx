@@ -19,8 +19,8 @@ export const Route = createFileRoute("/contact")({
 function Contact() {
   return (
     <main className="min-h-screen bg-paper">
-      <SiteNav solid />
-      <section className="mx-auto max-w-3xl px-4 sm:px-6 md:px-10 pt-28 sm:pt-32 pb-20">
+      <SiteNav solid hideDashboard />
+      <section className="mx-auto max-w-3xl px-4 sm:px-6 md:px-10 pt-28 sm:pt-32 pb-20 text-center">
         <h1
           className="font-display text-4xl sm:text-5xl md:text-6xl text-ink"
           style={{ letterSpacing: "-0.035em", lineHeight: 0.95 }}
@@ -30,13 +30,13 @@ function Contact() {
             touch.
           </span>
         </h1>
-        <p className="mt-5 text-lg text-body max-w-xl">
+        <p className="mt-5 text-lg text-body max-w-xl mx-auto">
           Questions, feedback, or feature requests? We read everything.
         </p>
 
-        <div className="mt-10 grid gap-4 sm:grid-cols-2">
+        <div className="mt-10 grid gap-4 sm:grid-cols-2 text-left">
           <a
-            href="mailto:hello@reverseinterview.ai"
+            href="mailto:support@example.com"
             className="flex items-center gap-4 rounded-2xl border border-ink/10 bg-white p-5 shadow-sm hover:border-ink/30 transition-colors"
           >
             <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-cream border border-ink/5">
@@ -44,7 +44,7 @@ function Contact() {
             </span>
             <div>
               <p className="font-medium text-ink">Email</p>
-              <p className="text-sm text-body">hello@reverseinterview.ai</p>
+              <p className="text-sm text-body">support@example.com</p>
             </div>
           </a>
 
@@ -62,7 +62,7 @@ function Contact() {
           </a>
 
           <a
-            href="https://github.com/reverse-interview-ai"
+            href="#"
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-4 rounded-2xl border border-ink/10 bg-white p-5 shadow-sm hover:border-ink/30 transition-colors"
@@ -72,7 +72,7 @@ function Contact() {
             </span>
             <div>
               <p className="font-medium text-ink">GitHub</p>
-              <p className="text-sm text-body">Source code & issues</p>
+              <p className="text-sm text-body">View on GitHub</p>
             </div>
           </a>
         </div>

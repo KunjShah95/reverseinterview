@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect } from "@tanstack/react-router";
 import {
   Play,
   ArrowRight,
@@ -19,8 +19,15 @@ import {
 } from "lucide-react";
 import SiteNav from "@/components/SiteNav";
 import heroImg from "@/assets/hero.jpg";
+import { getSession } from "@/lib/auth-functions";
 
 export const Route = createFileRoute("/")({
+  beforeLoad: async () => {
+    const session = await getSession();
+    if (session.authenticated) {
+      throw redirect({ to: "/dashboard" });
+    }
+  },
   head: () => ({
     meta: [
       {
@@ -58,13 +65,13 @@ function LandingPage() {
         />
       </div>
 
-      <SiteNav />
+      <SiteNav hideDashboard={true} />
 
       {/* Hero copy */}
-      <section className="relative pt-28 sm:pt-32 md:pt-36 px-4 sm:px-6 md:px-10 max-w-7xl mx-auto">
+      <section className="relative pt-28 sm:pt-32 md:pt-36 px-4 sm:px-6 md:px-10 max-w-7xl mx-auto text-center">
        
         <h1
-          className="mt-6 text-ink font-display text-[2.25rem] sm:text-5xl md:text-6xl lg:text-[4.75rem] xl:text-[5.5rem] leading-[0.95] max-w-5xl"
+          className="mt-6 text-ink font-display text-[2.25rem] sm:text-5xl md:text-6xl lg:text-[4.75rem] xl:text-[5.5rem] leading-[0.95] max-w-5xl mx-auto"
           style={{ letterSpacing: "-0.035em" }}
         >
           Close the rift between offer letters{" "}
@@ -72,25 +79,23 @@ function LandingPage() {
             and reality.
           </span>
         </h1>
-        <p className="mt-6 max-w-xl text-base sm:text-lg text-ink/80 leading-relaxed">
+        <p className="mt-6 max-w-xl mx-auto text-base sm:text-lg text-ink/80 leading-relaxed">
           Reverse Interview AI reads the job post, the offer, the HR chat — and tells you what
           working there will actually feel like, before you sign.
         </p>
 
-        <div className="mt-8 flex flex-wrap items-center gap-3">
+        <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
           <Link
-            to="/analyze"
+            to="/sign-in/$"
             className="inline-flex shrink-0 items-center gap-2 rounded-full bg-ink px-6 py-3.5 text-sm font-medium text-cream shadow-lg shadow-ink/20 ring-1 ring-cream/20 transition-colors hover:bg-ink-hover"
           >
-            <span className="text-nowrap">Analyze a job</span>
-            <ArrowRight size={16} className="shrink-0" />
+            Sign in
           </Link>
           <Link
-            to="/analyze"
-            search={{ demo: 1 }}
+            to="/sign-up/$"
             className="inline-flex shrink-0 items-center gap-2 rounded-full border border-ink/30 bg-cream/80 backdrop-blur-md px-6 py-3.5 text-sm font-medium text-ink transition-colors hover:bg-cream"
           >
-            <span className="text-nowrap">See sample report</span>
+            Sign up
           </Link>
         </div>
       </section>
@@ -253,34 +258,25 @@ function LandingPage() {
       </section>
 
       {/* Bottom CTA block */}
-      <section className="relative mt-16 mb-10 mx-4 sm:mx-6 md:mx-10 max-w-md rounded-2xl bg-ink/70 backdrop-blur-md p-5">
-        <div className="flex items-center gap-2 mb-3">
+      <section className="relative mt-16 mb-10 mx-auto max-w-2xl rounded-2xl bg-ink/70 backdrop-blur-md p-8 text-center">
+        <div className="flex items-center justify-center gap-2 mb-4">
           <span
             className="inline-block h-2 w-2 rounded-full"
             style={{ backgroundColor: "var(--heading-accent)" }}
           />
-          <p className="text-sm font-medium text-cream">
+          <p className="text-sm font-medium text-cream uppercase tracking-wider">
             TruthScore<span className="opacity-60 text-xs align-super">™</span> engine
           </p>
         </div>
-        <p className="text-cream/90 text-sm md:text-base leading-relaxed">
+        <p className="text-cream/90 text-base md:text-lg leading-relaxed max-w-xl mx-auto">
           Eight specialist agents read the same offer in parallel — toxicity, burnout, salary
           fairness, ghost-hiring, HR claim verification — then a senior reviewer merges them into
           one verdict.
         </p>
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <Link
-            to="/analyze"
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-5 py-2.5 text-sm font-medium text-cream transition-colors"
-            style={{ backgroundColor: "var(--cta)" }}
-            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--cta-hover)")}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "var(--cta)")}
-          >
-            <span className="text-nowrap">Try it Live</span>
-          </Link>
+        <div className="mt-6 flex justify-center items-center gap-3">
           <Link
             to="/how-it-works"
-            className="shrink-0 text-sm text-cream/90 hover:text-cream underline-offset-4 hover:underline transition-colors"
+            className="shrink-0 text-sm font-medium text-cream hover:text-white underline underline-offset-4 transition-colors"
           >
             Know more →
           </Link>
@@ -290,14 +286,13 @@ function LandingPage() {
       {/* Bottom-right "demo" link */}
       <div className="hidden sm:flex justify-end mt-6 mb-8 mx-4 sm:mx-6 md:mx-10">
         <Link
-          to="/analyze"
-          search={{ demo: 1 }}
+          to="/how-it-works"
           className="inline-flex items-center gap-3 text-ink/70 hover:text-ink transition-colors group shrink-0"
         >
           <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-ink/10 backdrop-blur-md border border-ink/20 group-hover:bg-ink/20 transition-colors">
             <Play size={14} fill="currentColor" />
           </span>
-          <span className="text-sm font-medium text-nowrap">See it work</span>
+          <span className="text-sm font-medium text-nowrap">See how it works</span>
           <span className="text-xs text-ink/50 shrink-0">0:15</span>
         </Link>
       </div>

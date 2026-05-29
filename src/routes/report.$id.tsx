@@ -1,7 +1,7 @@
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
-import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
+import html2canvas from "html2canvas";
+import { jsPDF } from "jspdf";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -14,7 +14,7 @@ import {
 import { toast } from "sonner";
 import SiteNav from "@/components/SiteNav";
 import SiteFooter from "@/components/SiteFooter";
-import { getAnalysis } from "@/lib/analysis.functions";
+import DashboardSidebar from "@/components/DashboardSidebar";
 import { getLocalAnalysis, type LocalAnalysisRecord } from "@/lib/local-analysis";
 import type {
   AgentId,
@@ -40,21 +40,47 @@ const AGENT_LABELS: { id: AgentId; label: string }[] = [
 const ACTIVE_STATUSES: AnalysisStatus[] = ["queued", "running"];
 
 export const Route = createFileRoute("/report/$id")({
-  head: ({ params }) => ({
-    meta: [
-      { title: `Analysis report — Reverse Interview AI` },
-      {
-        name: "description",
-        content: `Multi-agent analysis of this job offer.`,
-      },
-      { property: "og:title", content: "A reverse-interview analysis" },
-      {
-        property: "og:description",
-        content: "See toxicity, burnout, salary, and ghost-hiring signals.",
-      },
-    ],
-    links: [{ rel: "canonical", href: `/report/${params.id}` }],
-  }),
+  loader: ({ params }) => {
+    return { record: getLocalAnalysis(params.id) };
+  },
+  head: ({ loaderData, params }) => {
+    const record = loaderData?.record;
+    const company = record?.result?.company || "Unknown Company";
+    const role = record?.result?.roleTitle || "Job Offer";
+    const recommendation = record?.result?.orchestrator?.recommendation || "Pending";
+    const score = record?.result?.orchestrator?.truthScore
+      ? Math.round(
+          (record.result.orchestrator.truthScore.transparency +
+            record.result.orchestrator.truthScore.workLifeBalance +
+            record.result.orchestrator.truthScore.careerGrowth +
+            record.result.orchestrator.truthScore.hiringIntegrity +
+            record.result.orchestrator.truthScore.compensationFairness) /
+            5,
+        )
+      : null;
+
+    const title = record
+      ? `Analysis: ${role} at ${company} — Reverse Interview AI`
+      : "Analysis Report — Reverse Interview AI";
+    const description = record
+      ? `Reverse Interview AI analysis for ${role} at ${company}. Verdict: ${recommendation}${score ? ` (${score}% TruthScore)` : ""}. See toxicity, burnout, and salary signals.`
+      : "Multi-agent analysis of this job offer. See toxicity, burnout, salary, and ghost-hiring signals.";
+
+    return {
+      meta: [
+        { title },
+        { name: "description", content: description },
+        { property: "og:title", content: title },
+        { property: "og:description", content: description },
+        { property: "og:type", content: "article" },
+        { property: "og:url", content: `https://reverseinterview.vercel.app/report/${params.id}` },
+        { name: "twitter:card", content: "summary_large_image" },
+        { name: "twitter:title", content: title },
+        { name: "twitter:description", content: description },
+      ],
+      links: [{ rel: "canonical", href: `https://reverseinterview.vercel.app/report/${params.id}` }],
+    };
+  },
   component: ReportPage,
   errorComponent: ReportErrorView,
   notFoundComponent: () => (
@@ -71,49 +97,38 @@ export const Route = createFileRoute("/report/$id")({
 
 function ReportPage() {
   const { id } = Route.useParams();
-  const isLocalReport = id.startsWith("local-");
-  const fetchAnalysis = useServerFn(getAnalysis);
   const reportRef = useRef<HTMLDivElement>(null);
   const [downloading, setDownloading] = useState(false);
   const [localData, setLocalData] = useState<LocalAnalysisRecord | null>(null);
-  const [localLoaded, setLocalLoaded] = useState(false);
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["analysis", id],
-    queryFn: () => fetchAnalysis({ data: { id } }),
-    enabled: !isLocalReport,
-    refetchInterval: (query) =>
-      ACTIVE_STATUSES.includes(query.state.data?.status as AnalysisStatus) ? 1500 : false,
-  });
 
   useEffect(() => {
-    if (!isLocalReport) {
-      setLocalData(null);
-      setLocalLoaded(false);
-      return;
-    }
-
     setLocalData(getLocalAnalysis(id));
-    setLocalLoaded(true);
-  }, [id, isLocalReport]);
+  }, [id]);
 
-  const currentData = isLocalReport ? localData : data;
-  const currentLoading = isLocalReport ? !localLoaded : isLoading;
-  const currentError = isLocalReport ? (localLoaded && !localData ? new Error("Local analysis not found") : null) : error;
+  const currentData = localData;
+  const currentLoading = localData === null;
+  const currentError = localData ? null : new Error("Analysis not found");
   const reportStatus = currentData?.status;
   const reportError = currentData?.error ?? null;
 
   if (currentLoading) {
     return (
-      <div className="min-h-screen bg-paper">
-        <SiteNav solid />
+      <div className="min-h-screen bg-paper lg:pl-72">
+        <DashboardSidebar />
+        <div className="lg:hidden">
+          <SiteNav solid />
+        </div>
         <div className="pt-36 px-6 text-center text-body">Loading analysis…</div>
       </div>
     );
   }
   if (currentError || !currentData) {
     return (
-      <div className="min-h-screen bg-paper">
-        <SiteNav solid />
+      <div className="min-h-screen bg-paper lg:pl-72">
+        <DashboardSidebar />
+        <div className="lg:hidden">
+          <SiteNav solid />
+        </div>
         <div className="pt-36 px-6 text-center text-body">
           This analysis could not be loaded.
         </div>
@@ -123,22 +138,24 @@ function ReportPage() {
 
   const r = currentData.result ?? {};
   const progress = currentData.progress;
-  const reportReady = !!r.orchestrator;
 
   async function downloadPdf() {
     if (!reportRef.current) return;
     setDownloading(true);
     try {
-      const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([
-        import("html2canvas"),
-        import("jspdf"),
-      ]);
       const node = reportRef.current;
+      if (typeof document !== "undefined" && "fonts" in document) {
+        await (document as Document & { fonts?: FontFaceSet }).fonts?.ready;
+      }
+      await new Promise((resolve) => window.requestAnimationFrame(() => resolve(null)));
       const canvas = await html2canvas(node, {
         backgroundColor: "#fbf9f4",
-        scale: 2,
+        scale: 1.5,
         useCORS: true,
         windowWidth: node.scrollWidth,
+        windowHeight: node.scrollHeight,
+        scrollX: 0,
+        scrollY: -window.scrollY,
       });
       const imgData = canvas.toDataURL("image/jpeg", 0.92);
       const pdf = new jsPDF({ unit: "pt", format: "a4", orientation: "portrait" });
@@ -172,8 +189,11 @@ function ReportPage() {
   }
 
   return (
-    <main className="min-h-screen bg-paper">
-      <SiteNav solid />
+    <main className="min-h-screen bg-paper lg:pl-72">
+      <DashboardSidebar />
+      <div className="lg:hidden">
+        <SiteNav solid />
+      </div>
       <div ref={reportRef}>
         <VerdictHero r={r} status={reportStatus ?? "failed"} error={reportError} />
         <div className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pb-20 space-y-8">
@@ -203,7 +223,7 @@ function ReportPage() {
       <div className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pb-10 flex flex-wrap items-center justify-center gap-3">
         <button
           onClick={downloadPdf}
-          disabled={downloading || !reportReady}
+          disabled={downloading}
           className="inline-flex items-center gap-2 rounded-full border border-ink/15 bg-white px-5 py-2.5 text-sm font-medium text-ink hover:bg-cream transition-colors disabled:opacity-60"
         >
           {downloading ? (

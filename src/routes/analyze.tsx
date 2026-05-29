@@ -14,7 +14,6 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { toast } from "sonner";
-import SiteNav from "@/components/SiteNav";
 import { getSessionId } from "@/lib/session";
 import type { OcrSummary } from "@/lib/ocr-types";
 import {
@@ -336,14 +335,13 @@ function AnalyzePage() {
 
   return (
     <main className="min-h-screen bg-paper">
-      <SiteNav solid />
       <div className="mx-auto max-w-4xl px-4 sm:px-6 md:px-10 pt-28 sm:pt-32 pb-20">
-        <header className="mb-10">
+        <header className="mb-10 text-center">
           <span className="inline-flex items-center gap-2 rounded-full border border-ink/15 bg-white px-3 py-1 text-xs font-medium text-ink">
             <Sparkles size={12} /> Multi-agent analysis
           </span>
           <h1
-            className="mt-4 font-display text-4xl sm:text-5xl md:text-6xl text-ink"
+            className="mt-4 font-display text-4xl sm:text-5xl md:text-6xl text-ink mx-auto"
             style={{ letterSpacing: "-0.035em", lineHeight: 0.95 }}
           >
             Paste, drop, or look up. We&apos;ll read between the{" "}
@@ -351,7 +349,7 @@ function AnalyzePage() {
               lines.
             </span>
           </h1>
-          <p className="mt-4 text-body max-w-2xl">
+          <p className="mt-4 text-body max-w-2xl mx-auto">
             Bring the job description, offer letter, recruiter screenshot, or just a company URL.
             Eight specialist agents analyze toxicity, burnout, salary fairness, ghost-hiring
             signals, and write the questions you should ask back.
@@ -430,7 +428,7 @@ function AnalyzePage() {
                 <input
                   value={companyQuery}
                   onChange={(e) => setCompanyQuery(e.target.value)}
-                  placeholder="acmecorp.com  or  Acme Corp"
+                  placeholder="example.com  or  Company Name"
                   className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2.5 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-heading/40"
                 />
                 <button

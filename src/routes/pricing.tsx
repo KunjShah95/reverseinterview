@@ -47,8 +47,8 @@ const tiers = [
 function Pricing() {
   return (
     <main className="min-h-screen bg-paper">
-      <SiteNav solid />
-      <section className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pt-28 sm:pt-32 pb-20">
+      <SiteNav solid hideDashboard />
+      <section className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pt-28 sm:pt-32 pb-20 text-center">
         <h1
           className="font-display text-4xl sm:text-5xl md:text-6xl text-ink"
           style={{ letterSpacing: "-0.035em", lineHeight: 0.95 }}
@@ -58,12 +58,12 @@ function Pricing() {
             new.
           </span>
         </h1>
-        <p className="mt-5 text-lg text-body max-w-2xl">
+        <p className="mt-5 text-lg text-body max-w-2xl mx-auto">
           Honest signals about employers shouldn&apos;t be locked behind a paywall.
           Use it, share it, tell us what to build next.
         </p>
 
-        <div className="mt-12 grid gap-6 md:grid-cols-3">
+        <div className="mt-12 grid gap-6 md:grid-cols-3 text-left">
           {tiers.map((t) => (
             <div
               key={t.name}

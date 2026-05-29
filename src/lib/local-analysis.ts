@@ -407,3 +407,35 @@ export function listLocalAnalyses(sessionId: string) {
       recommendation: record.result.orchestrator?.recommendation ?? null,
     }));
 }
+
+export function listLocalAnalysisRecords(sessionId: string) {
+  return readAnalyses().filter((record) => record.sessionId === sessionId);
+}
+
+export function getLocalDashboardStats(sessionId: string) {
+  const records = readAnalyses().filter((record) => record.sessionId === sessionId);
+  let proceed = 0;
+  let caution = 0;
+  let avoid = 0;
+  let running = 0;
+
+  for (const record of records) {
+    if (record.status === "queued" || record.status === "running") {
+      running++;
+      continue;
+    }
+
+    const recommendation = record.result.orchestrator?.recommendation;
+    if (recommendation === "proceed") proceed++;
+    else if (recommendation === "avoid") avoid++;
+    else if (recommendation === "caution") caution++;
+  }
+
+  return {
+    total: records.length,
+    proceed,
+    caution,
+    avoid,
+    running,
+  };
+}

@@ -1,0 +1,19 @@
+# Reverse Interview AI
+
+> AI-powered job offer analysis. Upload a job post, offer letter, or HR chat. Get toxicity flags, burnout risk, salary fairness, and ghost-hiring signals.
+
+## What it does
+
+Reverse Interview AI uses eight specialist AI agents to analyze job offers. Each agent evaluates a different dimension — toxicity, burnout, salary fairness, ghost-hiring signals, culture fit, growth potential, management quality, and stability — then merges into a single TruthScore verdict.
+
+## Key pages
+
+- [Analyze a job](https://example.com/analyze) — Upload or paste a job description for instant analysis
+- [How it works](https://example.com/how-it-works) — The eight-agent analysis process
+- [Features](https://example.com/features) — Full feature list and agent descriptions
+- [Pricing](https://example.com/pricing) — Free during early access
+- [About](https://example.com/about) — Mission and background
+
+## Contact
+
+- Website: https://example.com
