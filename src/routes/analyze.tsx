@@ -1,7 +1,8 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { z } from "zod";
 import { useServerFn } from "@tanstack/react-start";
+import { useQuery } from "@tanstack/react-query";
 import {
   Loader2,
   Sparkles,
@@ -15,7 +16,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import SiteNav from "@/components/SiteNav";
+import { getSession } from "@/lib/auth-functions";
 import { runAnalysis } from "@/lib/analysis.functions";
+import { getSessionId } from "@/lib/session";
+import type { OcrSummary } from "@/lib/ocr-types";
 import {
   getPdfInfo,
   extractPdfPages,
@@ -24,7 +28,7 @@ import {
   detectDocType,
   type DocTypeResult,
 } from "@/lib/extract.functions";
-import { getSessionId } from "@/lib/session";
+import { createLocalAnalysis, saveLocalAnalysis } from "@/lib/local-analysis";
 
 const DEMO_JD = `Senior Full-Stack Engineer — URGENT HIRE
 
@@ -90,6 +94,7 @@ const DOC_LABELS: Record<DocTypeResult["docType"], string> = {
 function AnalyzePage() {
   const { demo } = Route.useSearch();
   const navigate = useNavigate();
+  const fetchSession = useServerFn(getSession);
   const run = useServerFn(runAnalysis);
   const pdfInfo = useServerFn(getPdfInfo);
   const pdfPages = useServerFn(extractPdfPages);
@@ -97,12 +102,26 @@ function AnalyzePage() {
   const lookup = useServerFn(lookupCompany);
   const classify = useServerFn(detectDocType);
 
+  const { data: session, isLoading: sessionLoading } = useQuery({
+    queryKey: ["session"],
+    queryFn: () => fetchSession(),
+    refetchOnWindowFocus: true,
+    staleTime: 30_000,
+  });
+
+  useEffect(() => {
+    if (!sessionLoading && !session) {
+      return;
+    }
+  }, [session, sessionLoading]);
+
   const [mode, setMode] = useState<Mode>("text");
   const [text, setText] = useState(demo ? DEMO_JD : "");
   const [companyQuery, setCompanyQuery] = useState("");
   const [pdfName, setPdfName] = useState<string | null>(null);
   const [imgName, setImgName] = useState<string | null>(null);
   const [extracting, setExtracting] = useState(false);
+  const [ocrMeta, setOcrMeta] = useState<OcrSummary | null>(null);
   const [pdfProgress, setPdfProgress] = useState<{
     current: number;
     total: number;
@@ -131,6 +150,7 @@ function AnalyzePage() {
     setPdfName(file.name);
     setPdfProgress(null);
     resetDocType();
+    setOcrMeta(null);
     try {
       const base64 = await fileToBase64(file);
 
@@ -154,14 +174,27 @@ function AnalyzePage() {
       setPdfProgress({ current: 0, total: info.numPages });
       const chunks: string[] = [];
       let extractedSoFar = 0;
+      const confidences: number[] = [];
+      const warnings = new Set<string>();
+      let extractionMethod: OcrSummary["method"] = "text-extract";
       for (let from = 1; from <= info.numPages; from += PDF_CHUNK) {
         const to = Math.min(from + PDF_CHUNK - 1, info.numPages);
         try {
-          const { text: t, pagesExtracted } = await pdfPages({
-            data: { base64, fromPage: from, toPage: to },
-          });
+          const {
+            text: t,
+            pagesExtracted,
+            method,
+            confidence,
+            warnings: pageWarnings,
+          } = await pdfPages({ data: { base64, fromPage: from, toPage: to } });
           if (t) chunks.push(t);
           extractedSoFar += pagesExtracted;
+          confidences.push(confidence ?? 0);
+          if (method !== "text-extract") {
+            warnings.add("Scanned PDF OCR was used for at least one page.");
+            extractionMethod = "tesseract";
+          }
+          for (const warning of pageWarnings ?? []) warnings.add(warning);
           setPdfProgress({ current: to, total: info.numPages });
         } catch (err) {
           const msg = err instanceof Error ? err.message : "page extraction failed";
@@ -173,12 +206,21 @@ function AnalyzePage() {
       const merged = chunks.join("\n\n").slice(0, 80_000);
       if (merged.trim().length < 40) {
         toast.error(
-          "Pulled the PDF apart but found almost no text. It's likely scanned — try the Screenshot tab instead."
+          "Pulled the PDF apart but found almost no text. It's likely scanned — try the Screenshot tab instead.",
         );
       } else {
         setText(merged);
+        const averageConfidence = confidences.length
+          ? Math.round(confidences.reduce((sum, value) => sum + value, 0) / confidences.length)
+          : 0;
+        setOcrMeta({
+          method: extractionMethod,
+          confidence: averageConfidence,
+          warnings: [...warnings],
+          pagesProcessed: extractedSoFar,
+        });
         toast.success(
-          `Extracted ${extractedSoFar} page${extractedSoFar === 1 ? "" : "s"} (${merged.length.toLocaleString()} chars) from ${file.name}`
+          `Extracted ${extractedSoFar} page${extractedSoFar === 1 ? "" : "s"} (${merged.length.toLocaleString()} chars) from ${file.name}`,
         );
       }
     } catch (err) {
@@ -199,15 +241,28 @@ function AnalyzePage() {
     setExtracting(true);
     setImgName(file.name);
     resetDocType();
+    setOcrMeta(null);
     try {
       const base64 = await fileToBase64(file);
-      const { text: extracted } = await extractImg({
+      const {
+        text: extracted,
+        confidence,
+        method,
+        warnings,
+        averageWordCount,
+      } = await extractImg({
         data: { base64, mimeType: file.type || "image/png" },
       });
       if (extracted.trim().length < 20) {
         toast.error("No readable text found in the image.");
       } else {
         setText(extracted);
+        setOcrMeta({
+          method,
+          confidence,
+          warnings: warnings ?? [],
+          averageWordCount,
+        });
         toast.success("Transcribed screenshot — review below, then run analysis.");
       }
     } catch (err) {
@@ -230,11 +285,12 @@ function AnalyzePage() {
         data: { query: companyQuery },
       });
       setText(extracted);
+      setOcrMeta(null);
       if (!company && brief?.companyName) setCompany(brief.companyName);
       toast.success(
         brief?.sourcesUsed?.length
           ? `Pulled ${brief.sourcesUsed.length} page(s) — review below, then run analysis.`
-          : "Loaded company brief — review below, then run analysis."
+          : "Loaded company brief — review below, then run analysis.",
       );
     } catch (err) {
       console.error(err);
@@ -254,6 +310,22 @@ function AnalyzePage() {
     setSubmitting(true);
     setDetecting(true);
     try {
+      if (!session?.authenticated) {
+        const fallback = createLocalAnalysis({
+          sourceText: text,
+          company: company || undefined,
+          roleTitle: roleTitle || undefined,
+          offeredSalary: offeredSalary || undefined,
+          location: location || undefined,
+          yearsExperience: yearsExperience || undefined,
+          sessionId: getSessionId(),
+        });
+        saveLocalAnalysis(fallback);
+        toast.info("Not signed in, so I created a local demo report instead.");
+        navigate({ to: "/report/$id", params: { id: fallback.id } });
+        return;
+      }
+
       // Detect doc type first so the orchestrator gets richer context.
       let detected: DocTypeResult | null = null;
       try {
@@ -278,20 +350,24 @@ function AnalyzePage() {
           offeredSalary: offeredSalary || undefined,
           location: location || undefined,
           yearsExperience: yearsExperience || undefined,
-          sessionId: getSessionId(),
         },
       });
       navigate({ to: "/report/$id", params: { id } });
     } catch (err) {
       console.error(err);
-      const msg = err instanceof Error ? err.message : "Something went wrong.";
-      if (msg.includes("429")) {
-        toast.error("Rate limit reached — please wait a moment and try again.");
-      } else if (msg.includes("402")) {
-        toast.error("AI credits exhausted on this workspace.");
-      } else {
-        toast.error("Analysis failed. Try a shorter or simpler text.");
-      }
+      const fallback = createLocalAnalysis({
+        sourceText: text,
+        company: company || undefined,
+        roleTitle: roleTitle || undefined,
+        offeredSalary: offeredSalary || undefined,
+        location: location || undefined,
+        yearsExperience: yearsExperience || undefined,
+      });
+      saveLocalAnalysis(fallback);
+      toast.info(
+        "Backend analysis isn’t configured here, so I created a local demo report instead.",
+      );
+      navigate({ to: "/report/$id", params: { id: fallback.id } });
       setSubmitting(false);
       setDetecting(false);
     }
@@ -307,6 +383,17 @@ function AnalyzePage() {
   const pct = pdfProgress
     ? Math.round((pdfProgress.current / Math.max(pdfProgress.total, 1)) * 100)
     : 0;
+
+  if (sessionLoading) {
+    return (
+      <main className="min-h-screen bg-paper">
+        <SiteNav solid />
+        <div className="flex items-center justify-center pt-36">
+          <Loader2 size={24} className="animate-spin text-body" />
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-paper">
@@ -326,10 +413,9 @@ function AnalyzePage() {
             </span>
           </h1>
           <p className="mt-4 text-body max-w-2xl">
-            Bring the job description, offer letter, recruiter screenshot, or
-            just a company URL. Eight specialist agents analyze toxicity,
-            burnout, salary fairness, ghost-hiring signals, and write the
-            questions you should ask back.
+            Bring the job description, offer letter, recruiter screenshot, or just a company URL.
+            Eight specialist agents analyze toxicity, burnout, salary fairness, ghost-hiring
+            signals, and write the questions you should ask back.
           </p>
         </header>
 
@@ -393,16 +479,14 @@ function AnalyzePage() {
             <FileDrop
               accept="image/png,image/jpeg,image/webp"
               label={imgName ?? "Drop a screenshot (PNG / JPG / WEBP)"}
-              hint="Gemini Vision reads the text — recruiter chats, LinkedIn posts, anything."
+              hint="Open-source OCR (tesseract/pdf) extracts text — review the result before analysis."
               busy={extracting}
               onFile={handleImage}
             />
           )}
           {mode === "company" && (
             <div className="rounded-xl border border-ink/15 bg-cream/40 p-4">
-              <label className="block text-sm font-medium text-ink mb-2">
-                Company URL or name
-              </label>
+              <label className="block text-sm font-medium text-ink mb-2">Company URL or name</label>
               <div className="flex gap-2">
                 <input
                   value={companyQuery}
@@ -425,8 +509,8 @@ function AnalyzePage() {
                 </button>
               </div>
               <p className="mt-2 text-xs text-body/80">
-                URLs are fetched, then About / Values / Benefits / Careers pages
-                are pulled and summarized. Plain names fall back to a public-knowledge brief.
+                URLs are fetched, then About / Values / Benefits / Careers pages are pulled and
+                summarized. Plain names fall back to a public-knowledge brief.
               </p>
             </div>
           )}
@@ -451,15 +535,42 @@ function AnalyzePage() {
             required
           />
 
+          {ocrMeta && (
+            <div className="mt-3 rounded-xl border border-ink/10 bg-cream/40 px-4 py-3 text-sm text-ink">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium">OCR review</span>
+                <span className="rounded-full bg-white px-2.5 py-1 text-xs text-body border border-ink/10">
+                  {ocrMeta.method}
+                </span>
+                <span className="rounded-full bg-white px-2.5 py-1 text-xs text-body border border-ink/10">
+                  confidence {ocrMeta.confidence}%
+                </span>
+                {typeof ocrMeta.averageWordCount === "number" && (
+                  <span className="rounded-full bg-white px-2.5 py-1 text-xs text-body border border-ink/10">
+                    {ocrMeta.averageWordCount} words
+                  </span>
+                )}
+              </div>
+              {ocrMeta.warnings.length > 0 && (
+                <ul className="mt-2 list-disc pl-5 text-xs text-body/90 space-y-1">
+                  {ocrMeta.warnings.map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              )}
+              <p className="mt-2 text-xs text-body/80">
+                Please skim the extracted text for headers, bullets, dates, and salary numbers
+                before running analysis.
+              </p>
+            </div>
+          )}
+
           {docType && (
             <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-ink/15 bg-cream/40 px-3 py-1.5 text-xs text-ink">
               {docType.docType === "unknown" ? (
                 <AlertTriangle size={12} className="text-body" />
               ) : (
-                <CheckCircle2
-                  size={12}
-                  style={{ color: "var(--heading-accent)" }}
-                />
+                <CheckCircle2 size={12} style={{ color: "var(--heading-accent)" }} />
               )}
               <span className="font-medium">{DOC_LABELS[docType.docType]}</span>
               <span className="text-body/80">· {docType.confidence} confidence</span>
@@ -467,11 +578,36 @@ function AnalyzePage() {
           )}
 
           <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Field label="Company (optional)" value={company} onChange={setCompany} placeholder="Acme Corp" />
-            <Field label="Role title (optional)" value={roleTitle} onChange={setRoleTitle} placeholder="Senior Engineer" />
-            <Field label="Offered salary (optional)" value={offeredSalary} onChange={setOfferedSalary} placeholder="$120k base + equity" />
-            <Field label="Location (optional)" value={location} onChange={setLocation} placeholder="Remote, US" />
-            <Field label="Your years of experience (optional)" value={yearsExperience} onChange={setYearsExperience} placeholder="5" />
+            <Field
+              label="Company (optional)"
+              value={company}
+              onChange={setCompany}
+              placeholder="Acme Corp"
+            />
+            <Field
+              label="Role title (optional)"
+              value={roleTitle}
+              onChange={setRoleTitle}
+              placeholder="Senior Engineer"
+            />
+            <Field
+              label="Offered salary (optional)"
+              value={offeredSalary}
+              onChange={setOfferedSalary}
+              placeholder="$120k base + equity"
+            />
+            <Field
+              label="Location (optional)"
+              value={location}
+              onChange={setLocation}
+              placeholder="Remote, US"
+            />
+            <Field
+              label="Your years of experience (optional)"
+              value={yearsExperience}
+              onChange={setYearsExperience}
+              placeholder="5"
+            />
           </div>
 
           <div className="mt-8 flex flex-wrap items-center gap-3">
@@ -483,9 +619,7 @@ function AnalyzePage() {
               {submitting ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
-                  {detecting
-                    ? "Detecting document type…"
-                    : "Analyzing — 8 agents running…"}
+                  {detecting ? "Detecting document type..." : "Creating swarm report..."}
                 </>
               ) : (
                 <>Run analysis →</>
@@ -508,7 +642,8 @@ function AnalyzePage() {
           </div>
 
           <p className="mt-4 text-xs text-body/80">
-            Analysis usually takes 10–20 seconds. We never share what you paste.
+            We open your report immediately, then agents fill in sections live. We never share what
+            you paste.
           </p>
         </form>
       </div>
@@ -544,9 +679,7 @@ function FileDrop({
         if (f) onFile(f);
       }}
       className={`flex flex-col items-center justify-center text-center cursor-pointer rounded-xl border-2 border-dashed px-6 py-10 transition-colors ${
-        dragging
-          ? "border-heading bg-heading/5"
-          : "border-ink/20 bg-cream/40 hover:bg-cream/60"
+        dragging ? "border-heading bg-heading/5" : "border-ink/20 bg-cream/40 hover:bg-cream/60"
       }`}
     >
       <input

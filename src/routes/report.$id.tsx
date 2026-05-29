@@ -1,7 +1,7 @@
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -15,7 +15,29 @@ import { toast } from "sonner";
 import SiteNav from "@/components/SiteNav";
 import SiteFooter from "@/components/SiteFooter";
 import { getAnalysis } from "@/lib/analysis.functions";
-import type { AnalysisResult, Severity } from "@/lib/analysis-types";
+import { getLocalAnalysis, type LocalAnalysisRecord } from "@/lib/local-analysis";
+import type {
+  AgentId,
+  AnalysisProgress,
+  AnalysisStatus,
+  PartialAnalysisResult,
+  Severity,
+} from "@/lib/analysis-types";
+
+const AGENT_LABELS: { id: AgentId; label: string }[] = [
+  { id: "culture", label: "Culture" },
+  { id: "burnout", label: "Burnout" },
+  { id: "salary", label: "Salary" },
+  { id: "ghost", label: "Ghost hiring" },
+  { id: "negotiation", label: "Negotiation" },
+  { id: "reverse", label: "Reverse interview" },
+  { id: "lie", label: "Claim verifier" },
+  { id: "simulation", label: "Career simulation" },
+  { id: "critic", label: "Critic" },
+  { id: "orchestrator", label: "Final verdict" },
+];
+
+const ACTIVE_STATUSES: AnalysisStatus[] = ["queued", "running"];
 
 export const Route = createFileRoute("/report/$id")({
   head: ({ params }) => ({
@@ -34,26 +56,7 @@ export const Route = createFileRoute("/report/$id")({
     links: [{ rel: "canonical", href: `/report/${params.id}` }],
   }),
   component: ReportPage,
-  errorComponent: ({ error, reset }) => {
-    const router = useRouter();
-    return (
-      <div className="min-h-screen bg-cream flex items-center justify-center p-8 text-center">
-        <div>
-          <h1 className="font-display text-3xl text-ink">Couldn&apos;t load this report</h1>
-          <p className="mt-2 text-body">{error.message}</p>
-          <button
-            onClick={() => {
-              router.invalidate();
-              reset();
-            }}
-            className="mt-6 inline-flex items-center gap-2 rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-cream"
-          >
-            Try again
-          </button>
-        </div>
-      </div>
-    );
-  },
+  errorComponent: ReportErrorView,
   notFoundComponent: () => (
     <div className="min-h-screen bg-cream flex items-center justify-center p-8 text-center">
       <div>
@@ -68,13 +71,38 @@ export const Route = createFileRoute("/report/$id")({
 
 function ReportPage() {
   const { id } = Route.useParams();
+  const isLocalReport = id.startsWith("local-");
   const fetchAnalysis = useServerFn(getAnalysis);
+  const reportRef = useRef<HTMLDivElement>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [localData, setLocalData] = useState<LocalAnalysisRecord | null>(null);
+  const [localLoaded, setLocalLoaded] = useState(false);
   const { data, isLoading, error } = useQuery({
     queryKey: ["analysis", id],
     queryFn: () => fetchAnalysis({ data: { id } }),
+    enabled: !isLocalReport,
+    refetchInterval: (query) =>
+      ACTIVE_STATUSES.includes(query.state.data?.status as AnalysisStatus) ? 1500 : false,
   });
 
-  if (isLoading) {
+  useEffect(() => {
+    if (!isLocalReport) {
+      setLocalData(null);
+      setLocalLoaded(false);
+      return;
+    }
+
+    setLocalData(getLocalAnalysis(id));
+    setLocalLoaded(true);
+  }, [id, isLocalReport]);
+
+  const currentData = isLocalReport ? localData : data;
+  const currentLoading = isLocalReport ? !localLoaded : isLoading;
+  const currentError = isLocalReport ? (localLoaded && !localData ? new Error("Local analysis not found") : null) : error;
+  const reportStatus = currentData?.status;
+  const reportError = currentData?.error ?? null;
+
+  if (currentLoading) {
     return (
       <div className="min-h-screen bg-paper">
         <SiteNav solid />
@@ -82,20 +110,20 @@ function ReportPage() {
       </div>
     );
   }
-  if (error || !data?.result) {
+  if (currentError || !currentData) {
     return (
       <div className="min-h-screen bg-paper">
         <SiteNav solid />
         <div className="pt-36 px-6 text-center text-body">
-          This analysis isn&apos;t ready yet.
+          This analysis could not be loaded.
         </div>
       </div>
     );
   }
 
-  const r = data.result;
-  const reportRef = useRef<HTMLDivElement>(null);
-  const [downloading, setDownloading] = useState(false);
+  const r = currentData.result ?? {};
+  const progress = currentData.progress;
+  const reportReady = !!r.orchestrator;
 
   async function downloadPdf() {
     if (!reportRef.current) return;
@@ -147,18 +175,25 @@ function ReportPage() {
     <main className="min-h-screen bg-paper">
       <SiteNav solid />
       <div ref={reportRef}>
-        <VerdictHero r={r} />
+        <VerdictHero r={r} status={reportStatus ?? "failed"} error={reportError} />
         <div className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pb-20 space-y-8">
-          <TruthScoreCard r={r} />
+          <AgentProgressPanel progress={progress} status={reportStatus ?? "failed"} />
+          {reportStatus === "partial" && (
+            <StatusBanner text="This report is partial. Some agents failed or returned incomplete output, so the final verdict uses only available evidence." />
+          )}
+          {reportStatus === "failed" && (
+            <StatusBanner text={reportError || "The swarm could not complete this analysis."} />
+          )}
+          <TruthScoreCard r={r} progress={progress} />
           <div className="grid gap-6 lg:grid-cols-2">
-            <ToxicityCard r={r} />
-            <BurnoutGhostCard r={r} />
+            <ToxicityCard r={r} progress={progress} />
+            <BurnoutGhostCard r={r} progress={progress} />
           </div>
-          <SalaryCard r={r} />
-          <LieDetectorCard r={r} />
-          <ReverseQuestionsCard r={r} />
-          <SimulationCard r={r} />
-          <NegotiationCard r={r} />
+          <SalaryCard r={r} progress={progress} />
+          <LieDetectorCard r={r} progress={progress} />
+          <ReverseQuestionsCard r={r} progress={progress} />
+          <SimulationCard r={r} progress={progress} />
+          <NegotiationCard r={r} progress={progress} />
           <p className="text-xs text-body/70 text-center pt-6">
             Signals are interpretive, not factual claims. Always do your own
             research before accepting an offer.
@@ -168,7 +203,7 @@ function ReportPage() {
       <div className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pb-10 flex flex-wrap items-center justify-center gap-3">
         <button
           onClick={downloadPdf}
-          disabled={downloading}
+          disabled={downloading || !reportReady}
           className="inline-flex items-center gap-2 rounded-full border border-ink/15 bg-white px-5 py-2.5 text-sm font-medium text-ink hover:bg-cream transition-colors disabled:opacity-60"
         >
           {downloading ? (
@@ -193,13 +228,81 @@ function ReportPage() {
   );
 }
 
+function ReportErrorView({
+  error,
+  reset,
+}: {
+  error: Error;
+  reset: () => void;
+}) {
+  const router = useRouter();
+
+  return (
+    <div className="min-h-screen bg-cream flex items-center justify-center p-8 text-center">
+      <div>
+        <h1 className="font-display text-3xl text-ink">Couldn&apos;t load this report</h1>
+        <p className="mt-2 text-body">{error.message}</p>
+        <button
+          onClick={() => {
+            router.invalidate();
+            reset();
+          }}
+          className="mt-6 inline-flex items-center gap-2 rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-cream"
+        >
+          Try again
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function recColor(rec: string) {
   if (rec === "proceed") return { bg: "var(--safe)", label: "Proceed" };
   if (rec === "caution") return { bg: "var(--caution)", label: "Proceed with caution" };
   return { bg: "var(--danger)", label: "Avoid" };
 }
 
-function VerdictHero({ r }: { r: AnalysisResult }) {
+function VerdictHero({
+  r,
+  status,
+  error,
+}: {
+  r: PartialAnalysisResult;
+  status: AnalysisStatus;
+  error: string | null;
+}) {
+  if (!r.orchestrator) {
+    return (
+      <section className="px-4 sm:px-6 md:px-10 pt-28 sm:pt-32">
+        <div className="mx-auto max-w-5xl">
+          <div className="flex flex-wrap items-center gap-3 mb-4">
+            <span className="inline-flex items-center gap-2 rounded-full bg-ink px-3.5 py-1.5 text-xs font-semibold text-cream">
+              {status === "failed" ? (
+                <AlertTriangle size={14} />
+              ) : (
+                <Loader2 size={14} className="animate-spin" />
+              )}
+              {status === "failed" ? "Analysis failed" : "Swarm running"}
+            </span>
+            <span className="text-sm text-body">
+              {r.roleTitle || "Role pending"} /{" "}
+              <span className="font-medium text-ink">
+                {r.company || "Company pending"}
+              </span>
+            </span>
+          </div>
+          <h1
+            className="font-display text-3xl sm:text-5xl md:text-6xl text-ink"
+            style={{ letterSpacing: "-0.03em", lineHeight: 1.02 }}
+          >
+            {status === "failed"
+              ? error || "The swarm could not complete this report."
+              : "Specialist agents are analyzing this offer."}
+          </h1>
+        </div>
+      </section>
+    );
+  }
   const c = recColor(r.orchestrator.recommendation);
   return (
     <section className="px-4 sm:px-6 md:px-10 pt-28 sm:pt-32">
@@ -233,7 +336,16 @@ function VerdictHero({ r }: { r: AnalysisResult }) {
   );
 }
 
-function TruthScoreCard({ r }: { r: AnalysisResult }) {
+function TruthScoreCard({
+  r,
+  progress,
+}: {
+  r: PartialAnalysisResult;
+  progress: AnalysisProgress;
+}) {
+  if (!r.orchestrator) {
+    return <SectionFallback title="TruthScore breakdown" progress={progress.orchestrator} />;
+  }
   const items = [
     { label: "Transparency", v: r.orchestrator.truthScore.transparency },
     { label: "Work-life balance", v: r.orchestrator.truthScore.workLifeBalance },
@@ -275,7 +387,16 @@ function TruthScoreCard({ r }: { r: AnalysisResult }) {
   );
 }
 
-function ToxicityCard({ r }: { r: AnalysisResult }) {
+function ToxicityCard({
+  r,
+  progress,
+}: {
+  r: PartialAnalysisResult;
+  progress: AnalysisProgress;
+}) {
+  if (!r.culture) {
+    return <SectionFallback title="Culture & toxicity" progress={progress.culture} />;
+  }
   return (
     <Card title="Culture & toxicity" subtitle={r.culture.summary}>
       <div className="text-sm text-ink mb-3">
@@ -305,20 +426,41 @@ function ToxicityCard({ r }: { r: AnalysisResult }) {
   );
 }
 
-function BurnoutGhostCard({ r }: { r: AnalysisResult }) {
+function BurnoutGhostCard({
+  r,
+  progress,
+}: {
+  r: PartialAnalysisResult;
+  progress: AnalysisProgress;
+}) {
+  if (!r.burnout && !r.ghost) {
+    return <SectionFallback title="Burnout & ghost-hiring" progress={progress.burnout} />;
+  }
   return (
     <Card title="Burnout & ghost-hiring">
       <div className="grid grid-cols-2 gap-4 mb-4">
-        <Gauge label="Burnout risk" v={r.burnout.burnoutRisk} />
-        <Gauge label="Ghost-hire risk" v={r.ghost.ghostScore} />
+        {r.burnout ? (
+          <Gauge label="Burnout risk" v={r.burnout.burnoutRisk} />
+        ) : (
+          <MiniStatus label="Burnout risk" progress={progress.burnout} />
+        )}
+        {r.ghost ? (
+          <Gauge label="Ghost-hire risk" v={r.ghost.ghostScore} />
+        ) : (
+          <MiniStatus label="Ghost-hire risk" progress={progress.ghost} />
+        )}
       </div>
-      <p className="text-sm text-body mb-2">{r.burnout.summary}</p>
-      <ul className="text-sm text-body list-disc pl-5 space-y-1 mb-4">
-        {r.burnout.signals.slice(0, 4).map((s, i) => (
-          <li key={i}>{s}</li>
-        ))}
-      </ul>
-      {r.ghost.signals.length > 0 && (
+      {r.burnout && (
+        <>
+          <p className="text-sm text-body mb-2">{r.burnout.summary}</p>
+          <ul className="text-sm text-body list-disc pl-5 space-y-1 mb-4">
+            {r.burnout.signals.slice(0, 4).map((s, i) => (
+              <li key={i}>{s}</li>
+            ))}
+          </ul>
+        </>
+      )}
+      {r.ghost && r.ghost.signals.length > 0 && (
         <>
           <p className="text-sm font-medium text-ink mt-3 mb-1">Ghost-hire signals</p>
           <ul className="text-sm text-body list-disc pl-5 space-y-1">
@@ -332,7 +474,16 @@ function BurnoutGhostCard({ r }: { r: AnalysisResult }) {
   );
 }
 
-function SalaryCard({ r }: { r: AnalysisResult }) {
+function SalaryCard({
+  r,
+  progress,
+}: {
+  r: PartialAnalysisResult;
+  progress: AnalysisProgress;
+}) {
+  if (!r.salary) {
+    return <SectionFallback title="Salary fairness" progress={progress.salary} />;
+  }
   const color =
     r.salary.verdict === "underpaid"
       ? "var(--danger)"
@@ -363,7 +514,16 @@ function SalaryCard({ r }: { r: AnalysisResult }) {
   );
 }
 
-function LieDetectorCard({ r }: { r: AnalysisResult }) {
+function LieDetectorCard({
+  r,
+  progress,
+}: {
+  r: PartialAnalysisResult;
+  progress: AnalysisProgress;
+}) {
+  if (!r.lie) {
+    return <SectionFallback title="HR claim verification" progress={progress.lie} />;
+  }
   if (!r.lie.mismatches.length) return null;
   return (
     <Card title="HR claim verification" subtitle={r.lie.summary}>
@@ -386,7 +546,16 @@ function LieDetectorCard({ r }: { r: AnalysisResult }) {
   );
 }
 
-function ReverseQuestionsCard({ r }: { r: AnalysisResult }) {
+function ReverseQuestionsCard({
+  r,
+  progress,
+}: {
+  r: PartialAnalysisResult;
+  progress: AnalysisProgress;
+}) {
+  if (!r.reverse) {
+    return <SectionFallback title="Questions you should ask back" progress={progress.reverse} />;
+  }
   return (
     <Card
       title="Questions you should ask back"
@@ -414,7 +583,16 @@ function ReverseQuestionsCard({ r }: { r: AnalysisResult }) {
   );
 }
 
-function SimulationCard({ r }: { r: AnalysisResult }) {
+function SimulationCard({
+  r,
+  progress,
+}: {
+  r: PartialAnalysisResult;
+  progress: AnalysisProgress;
+}) {
+  if (!r.simulation) {
+    return <SectionFallback title="If you join - a simulation" progress={progress.simulation} />;
+  }
   return (
     <Card
       title="If you join — a simulation"
@@ -441,7 +619,16 @@ function SimulationCard({ r }: { r: AnalysisResult }) {
   );
 }
 
-function NegotiationCard({ r }: { r: AnalysisResult }) {
+function NegotiationCard({
+  r,
+  progress,
+}: {
+  r: PartialAnalysisResult;
+  progress: AnalysisProgress;
+}) {
+  if (!r.negotiation) {
+    return <SectionFallback title="Negotiation playbook" progress={progress.negotiation} />;
+  }
   return (
     <Card title="Negotiation playbook">
       <div>
@@ -469,6 +656,97 @@ function NegotiationCard({ r }: { r: AnalysisResult }) {
         </div>
       )}
     </Card>
+  );
+}
+
+function AgentProgressPanel({
+  progress,
+  status,
+}: {
+  progress: AnalysisProgress;
+  status: AnalysisStatus;
+}) {
+  const complete = AGENT_LABELS.filter(
+    (agent) => progress?.[agent.id]?.status === "complete"
+  ).length;
+  return (
+    <Card
+      title="Swarm progress"
+      subtitle={
+        ACTIVE_STATUSES.includes(status)
+          ? `${complete} of ${AGENT_LABELS.length} agents finished`
+          : `Status: ${status}`
+      }
+    >
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+        {AGENT_LABELS.map((agent) => {
+          const state = progress?.[agent.id]?.status ?? "pending";
+          return (
+            <div
+              key={agent.id}
+              className="flex min-h-12 items-center justify-between gap-2 rounded-lg border border-ink/10 bg-cream/40 px-3 py-2"
+            >
+              <span className="text-xs font-medium text-ink">{agent.label}</span>
+              <span className="inline-flex items-center gap-1 text-[11px] capitalize text-body">
+                {state === "running" && <Loader2 size={12} className="animate-spin" />}
+                {state === "complete" && <CheckCircle2 size={12} />}
+                {state === "failed" && <AlertTriangle size={12} />}
+                {state}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+function StatusBanner({ text }: { text: string }) {
+  return (
+    <div className="rounded-xl border border-ink/10 bg-cream/60 px-4 py-3 text-sm text-ink">
+      {text}
+    </div>
+  );
+}
+
+function SectionFallback({
+  title,
+  progress,
+}: {
+  title: string;
+  progress?: AnalysisProgress[AgentId];
+}) {
+  const failed = progress?.status === "failed";
+  return (
+    <Card title={title}>
+      <div className="flex min-h-24 items-center gap-3 rounded-lg border border-ink/10 bg-cream/40 p-4 text-sm text-body">
+        {failed ? (
+          <AlertTriangle size={16} className="shrink-0 text-ink/60" />
+        ) : (
+          <Loader2 size={16} className="shrink-0 animate-spin text-ink/60" />
+        )}
+        <span>
+          {failed
+            ? progress?.error || "This agent failed, but the rest of the swarm can continue."
+            : "Waiting for this agent to finish."}
+        </span>
+      </div>
+    </Card>
+  );
+}
+
+function MiniStatus({
+  label,
+  progress,
+}: {
+  label: string;
+  progress?: AnalysisProgress[AgentId];
+}) {
+  return (
+    <div className="rounded-xl border border-ink/10 bg-cream/40 p-3">
+      <p className="text-xs text-body">{label}</p>
+      <p className="mt-2 text-sm text-ink capitalize">{progress?.status ?? "pending"}</p>
+    </div>
   );
 }
 

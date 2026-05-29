@@ -9,17 +9,28 @@ export default function SiteFooter() {
             ReverseHire<span className="text-ink/40 text-xs align-super">™</span>
           </p>
           <p className="mt-1 max-w-md">
-            Signals shown are interpretive, not factual claims. Always do your own
-            research before accepting an offer.
+            Signals shown are interpretive, not factual claims. Always do your own research before
+            accepting an offer.
           </p>
         </div>
         <nav className="flex flex-wrap gap-x-6 gap-y-2">
-          <Link to="/" className="hover:text-ink transition-colors">Home</Link>
+          <Link to="/" className="hover:text-ink transition-colors">
+            Home
+          </Link>
           <Link to="/how-it-works" className="hover:text-ink transition-colors">
             The Process
           </Link>
+          <Link to="/features" className="hover:text-ink transition-colors">
+            Features
+          </Link>
           <Link to="/pricing" className="hover:text-ink transition-colors">
             Tariffs
+          </Link>
+          <Link to="/about" className="hover:text-ink transition-colors">
+            About
+          </Link>
+          <Link to="/contact" className="hover:text-ink transition-colors">
+            Contact
           </Link>
           <Link to="/analyze" className="hover:text-ink transition-colors">
             Analyze

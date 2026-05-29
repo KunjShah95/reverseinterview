@@ -1,129 +1,62 @@
-// Server-only helpers for calling the Lovable AI Gateway.
+// Server-only helpers for calling AI models through the Vercel AI SDK.
 // Do NOT import this file from client code.
 
-const GATEWAY_URL = "https://ai.gateway.lovable.dev/v1/chat/completions";
+import { generateText, Output } from "ai";
+import { groq } from "@ai-sdk/groq";
 
-type Message = { role: "system" | "user" | "assistant"; content: string };
-
+type Message = Parameters<typeof generateText>[0]["messages"][number];
 type ToolCallResult<T> = { name: string; arguments: T };
 
-export class AIGatewayError extends Error {
-  status: number;
-  constructor(message: string, status: number) {
+const DEFAULT_MODEL = groq("llama-3.3-70b-versatile");
+
+export class AIServiceError extends Error {
+  constructor(message: string) {
     super(message);
-    this.status = status;
   }
 }
 
-function getApiKey() {
-  const key = process.env.LOVABLE_API_KEY;
-  if (!key) throw new Error("LOVABLE_API_KEY is not configured");
-  return key;
-}
-
 /**
- * Call a tool-calling completion that forces the model to return one
- * structured JSON object matching the given parameters schema.
+ * Call a structured output generation that returns one JSON object matching
+ * the given schema.
  */
 export async function callStructured<T>({
-  model = "google/gemini-3-flash-preview",
+  model = DEFAULT_MODEL,
   messages,
   toolName,
   toolDescription,
   parameters,
 }: {
-  model?: string;
+  model?: Parameters<typeof generateText>[0]["model"];
   messages: Message[];
   toolName: string;
   toolDescription: string;
   parameters: Record<string, unknown>;
 }): Promise<ToolCallResult<T>> {
-  const apiKey = getApiKey();
-
-  const body = {
+  const { output } = await generateText({
     model,
     messages,
-    tools: [
-      {
-        type: "function",
-        function: {
-          name: toolName,
-          description: toolDescription,
-          parameters,
-        },
-      },
-    ],
-    tool_choice: { type: "function", function: { name: toolName } },
-  };
-
-  const res = await fetch(GATEWAY_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
+    output: Output.object({
+      name: toolName,
+      description: toolDescription,
+      schema: parameters,
+    }),
   });
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new AIGatewayError(
-      `AI Gateway ${res.status}: ${text.slice(0, 300)}`,
-      res.status
-    );
-  }
-
-  const data = (await res.json()) as {
-    choices?: Array<{
-      message?: {
-        tool_calls?: Array<{
-          function?: { name: string; arguments: string };
-        }>;
-      };
-    }>;
-  };
-
-  const call = data.choices?.[0]?.message?.tool_calls?.[0]?.function;
-  if (!call?.arguments) {
-    throw new AIGatewayError("AI Gateway returned no tool call", 500);
-  }
-
-  let parsed: T;
-  try {
-    parsed = JSON.parse(call.arguments) as T;
-  } catch {
-    throw new AIGatewayError("AI Gateway returned malformed JSON", 500);
-  }
-
-  return { name: call.name, arguments: parsed };
+  return { name: toolName, arguments: output as T };
 }
 
-/** Plain text completion (no tools). */
+/** Plain text completion (no structured output). */
 export async function callText({
-  model = "google/gemini-3-flash-preview",
+  model = DEFAULT_MODEL,
   messages,
 }: {
-  model?: string;
+  model?: Parameters<typeof generateText>[0]["model"];
   messages: Message[];
 }): Promise<string> {
-  const apiKey = getApiKey();
-  const res = await fetch(GATEWAY_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ model, messages }),
+  const { text } = await generateText({
+    model,
+    messages,
+    output: Output.text(),
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new AIGatewayError(
-      `AI Gateway ${res.status}: ${text.slice(0, 300)}`,
-      res.status
-    );
-  }
-  const data = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  return data.choices?.[0]?.message?.content ?? "";
+  return text;
 }
