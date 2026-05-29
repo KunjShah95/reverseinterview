@@ -1,4 +1,9 @@
-import type { AnalysisProgress, AnalysisStatus, PartialAnalysisResult } from "./analysis-types";
+import type {
+  AnalysisProgress,
+  AnalysisStatus,
+  PartialAnalysisResult,
+  ToxicityFlag,
+} from "./analysis-types";
 
 const LOCAL_ANALYSES_KEY = "rev-int-local-analyses";
 
@@ -167,7 +172,7 @@ export function createLocalAnalysis(input: LocalAnalysisInput): LocalAnalysisRec
         ? "caution"
         : "proceed";
 
-  const flags = toxicityHits
+  const flags: ToxicityFlag[] = toxicityHits
     ? [
         {
           phrase: toxicityTriggers
@@ -353,9 +358,22 @@ export function createLocalAnalysis(input: LocalAnalysisInput): LocalAnalysisRec
       topGreens,
     },
   };
+  function makeId() {
+    try {
+      // prefer Web Crypto / Node crypto if available
+      if (typeof crypto !== "undefined" && typeof (crypto as any).randomUUID === "function") {
+        return `local-${(crypto as any).randomUUID()}`;
+      }
+    } catch (_) {
+      // fall through to Math-based fallback
+    }
+    // fallback UUID v4-ish generator (not cryptographically strong but fine for local ids)
+    const rnd = () => Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1);
+    return `local-${rnd()}${rnd()}-${rnd()}-${rnd()}-${rnd()}${rnd()}${rnd()}`;
+  }
 
   return {
-    id: `local-${crypto.randomUUID()}`,
+    id: makeId(),
     sessionId: input.sessionId ?? "local",
     company,
     createdAt: now,

@@ -292,7 +292,7 @@ async function startAnalysisSwarm(analysisId: string, input: AnalysisInput) {
   const persistPatch = async (patch: SwarmPatch) => {
     progress = mergeProgress(progress, patch.progress);
     if (patch.result) {
-      result = { ...result, ...patch.result };
+      result = { ...result, ...(patch.result as PartialAnalysisResult) };
     }
 
     const update: Record<string, unknown> = {
@@ -306,7 +306,7 @@ async function startAnalysisSwarm(analysisId: string, input: AnalysisInput) {
     if (patch.completedAt) update.completed_at = patch.completedAt;
     if (typeof result.company === "string") update.company = result.company;
 
-    const { error } = await supabaseAdmin.from("analyses").update(update).eq("id", analysisId);
+    const { error } = await supabaseAdmin.from("analyses").update(update as any).eq("id", analysisId);
     if (error) throw new Error(error.message);
   };
 

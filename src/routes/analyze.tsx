@@ -1,8 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { z } from "zod";
 import { useServerFn } from "@tanstack/react-start";
-import { useQuery } from "@tanstack/react-query";
 import {
   Loader2,
   Sparkles,
@@ -16,8 +15,6 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import SiteNav from "@/components/SiteNav";
-import { getSession } from "@/lib/auth-functions";
-import { runAnalysis } from "@/lib/analysis.functions";
 import { getSessionId } from "@/lib/session";
 import type { OcrSummary } from "@/lib/ocr-types";
 import {
@@ -25,7 +22,6 @@ import {
   extractPdfPages,
   extractFromImage,
   lookupCompany,
-  detectDocType,
   type DocTypeResult,
 } from "@/lib/extract.functions";
 import { createLocalAnalysis, saveLocalAnalysis } from "@/lib/local-analysis";
@@ -94,26 +90,10 @@ const DOC_LABELS: Record<DocTypeResult["docType"], string> = {
 function AnalyzePage() {
   const { demo } = Route.useSearch();
   const navigate = useNavigate();
-  const fetchSession = useServerFn(getSession);
-  const run = useServerFn(runAnalysis);
   const pdfInfo = useServerFn(getPdfInfo);
   const pdfPages = useServerFn(extractPdfPages);
   const extractImg = useServerFn(extractFromImage);
   const lookup = useServerFn(lookupCompany);
-  const classify = useServerFn(detectDocType);
-
-  const { data: session, isLoading: sessionLoading } = useQuery({
-    queryKey: ["session"],
-    queryFn: () => fetchSession(),
-    refetchOnWindowFocus: true,
-    staleTime: 30_000,
-  });
-
-  useEffect(() => {
-    if (!sessionLoading && !session) {
-      return;
-    }
-  }, [session, sessionLoading]);
 
   const [mode, setMode] = useState<Mode>("text");
   const [text, setText] = useState(demo ? DEMO_JD : "");
@@ -310,49 +290,18 @@ function AnalyzePage() {
     setSubmitting(true);
     setDetecting(true);
     try {
-      if (!session?.authenticated) {
-        const fallback = createLocalAnalysis({
-          sourceText: text,
-          company: company || undefined,
-          roleTitle: roleTitle || undefined,
-          offeredSalary: offeredSalary || undefined,
-          location: location || undefined,
-          yearsExperience: yearsExperience || undefined,
-          sessionId: getSessionId(),
-        });
-        saveLocalAnalysis(fallback);
-        toast.info("Not signed in, so I created a local demo report instead.");
-        navigate({ to: "/report/$id", params: { id: fallback.id } });
-        return;
-      }
-
-      // Detect doc type first so the orchestrator gets richer context.
-      let detected: DocTypeResult | null = null;
-      try {
-        detected = await classify({ data: { text } });
-        setDocType(detected);
-        if (detected.suggestedCompany && !company) setCompany(detected.suggestedCompany);
-        if (detected.suggestedRole && !roleTitle) setRoleTitle(detected.suggestedRole);
-      } catch {
-        // Non-fatal — continue without classification.
-      }
-      setDetecting(false);
-
-      const typedPrefix = detected
-        ? `[Detected document type: ${DOC_LABELS[detected.docType]} (${detected.confidence} confidence) — ${detected.reason}]\n\n`
-        : "";
-
-      const { id } = await run({
-        data: {
-          sourceText: typedPrefix + text,
-          company: company || detected?.suggestedCompany || undefined,
-          roleTitle: roleTitle || detected?.suggestedRole || undefined,
-          offeredSalary: offeredSalary || undefined,
-          location: location || undefined,
-          yearsExperience: yearsExperience || undefined,
-        },
+      const fallback = createLocalAnalysis({
+        sourceText: text,
+        company: company || undefined,
+        roleTitle: roleTitle || undefined,
+        offeredSalary: offeredSalary || undefined,
+        location: location || undefined,
+        yearsExperience: yearsExperience || undefined,
+        sessionId: getSessionId(),
       });
-      navigate({ to: "/report/$id", params: { id } });
+      saveLocalAnalysis(fallback);
+      toast.info("Created a local demo report so you can still review the analysis here.");
+      navigate({ to: "/report/$id", params: { id: fallback.id } });
     } catch (err) {
       console.error(err);
       const fallback = createLocalAnalysis({
@@ -362,10 +311,11 @@ function AnalyzePage() {
         offeredSalary: offeredSalary || undefined,
         location: location || undefined,
         yearsExperience: yearsExperience || undefined,
+        sessionId: getSessionId(),
       });
       saveLocalAnalysis(fallback);
       toast.info(
-        "Backend analysis isn’t configured here, so I created a local demo report instead.",
+        "Created a local demo report so you can still review the analysis here.",
       );
       navigate({ to: "/report/$id", params: { id: fallback.id } });
       setSubmitting(false);
@@ -383,17 +333,6 @@ function AnalyzePage() {
   const pct = pdfProgress
     ? Math.round((pdfProgress.current / Math.max(pdfProgress.total, 1)) * 100)
     : 0;
-
-  if (sessionLoading) {
-    return (
-      <main className="min-h-screen bg-paper">
-        <SiteNav solid />
-        <div className="flex items-center justify-center pt-36">
-          <Loader2 size={24} className="animate-spin text-body" />
-        </div>
-      </main>
-    );
-  }
 
   return (
     <main className="min-h-screen bg-paper">
