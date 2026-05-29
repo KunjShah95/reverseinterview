@@ -114,19 +114,21 @@ async function searchExa(query: string, includeDomains?: string[]): Promise<Sear
     }>;
   };
 
-  return (json.results ?? [])
-    .map((result) => {
-      if (!result.url) return null;
-      const text = collectSearchText(result);
-      if (!text) return null;
-      return {
-        url: result.url,
-        title: result.title,
-        text,
-        source: "exa" as const,
-      };
-    })
-    .filter((hit): hit is SearchHit => Boolean(hit));
+  return (
+    (json.results ?? [])
+      .map((result) => {
+        if (!result.url) return null;
+        const text = collectSearchText(result);
+        if (!text) return null;
+        return {
+          url: result.url,
+          title: result.title,
+          text,
+          source: "exa" as const,
+        };
+      })
+      .filter(Boolean) as unknown
+  ) as SearchHit[];
 }
 
 async function searchTavily(query: string, includeDomains?: string[]): Promise<SearchHit[]> {
@@ -161,19 +163,21 @@ async function searchTavily(query: string, includeDomains?: string[]): Promise<S
     }>;
   };
 
-  return (json.results ?? [])
-    .map((result) => {
-      if (!result.url) return null;
-      const text = collectSearchText(result);
-      if (!text) return null;
-      return {
-        url: result.url,
-        title: result.title,
-        text,
-        source: "tavily" as const,
-      };
-    })
-    .filter((hit): hit is SearchHit => Boolean(hit));
+  return (
+    (json.results ?? [])
+      .map((result) => {
+        if (!result.url) return null;
+        const text = collectSearchText(result);
+        if (!text) return null;
+        return {
+          url: result.url,
+          title: result.title,
+          text,
+          source: "tavily" as const,
+        };
+      })
+      .filter(Boolean) as unknown
+  ) as SearchHit[];
 }
 
 function base64ToBytes(base64: string): Uint8Array {

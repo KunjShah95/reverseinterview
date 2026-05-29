@@ -1,4 +1,9 @@
-import type { AnalysisProgress, AnalysisStatus, PartialAnalysisResult } from "./analysis-types";
+import type {
+  AnalysisProgress,
+  AnalysisStatus,
+  PartialAnalysisResult,
+  ToxicityFlag,
+} from "./analysis-types";
 
 const LOCAL_ANALYSES_KEY = "rev-int-local-analyses";
 
@@ -167,7 +172,7 @@ export function createLocalAnalysis(input: LocalAnalysisInput): LocalAnalysisRec
         ? "caution"
         : "proceed";
 
-  const flags = toxicityHits
+  const flags: ToxicityFlag[] = toxicityHits
     ? [
         {
           phrase: toxicityTriggers
@@ -356,10 +361,8 @@ export function createLocalAnalysis(input: LocalAnalysisInput): LocalAnalysisRec
   function makeId() {
     try {
       // prefer Web Crypto / Node crypto if available
-      // @ts-expect-error runtime check
-      if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-        // @ts-expect-error runtime
-        return `local-${crypto.randomUUID()}`;
+      if (typeof crypto !== "undefined" && typeof (crypto as any).randomUUID === "function") {
+        return `local-${(crypto as any).randomUUID()}`;
       }
     } catch (_) {
       // fall through to Math-based fallback

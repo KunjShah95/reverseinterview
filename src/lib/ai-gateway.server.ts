@@ -4,7 +4,7 @@
 import { generateText, Output } from "ai";
 import { groq } from "@ai-sdk/groq";
 
-type Message = Parameters<typeof generateText>[0]["messages"][number];
+type Message = any;
 type ToolCallResult<T> = { name: string; arguments: T };
 
 const DEFAULT_MODEL = groq("llama-3.3-70b-versatile");
@@ -38,7 +38,8 @@ export async function callStructured<T>({
     output: Output.object({
       name: toolName,
       description: toolDescription,
-      schema: parameters,
+      // library expects a FlexibleSchema; cast here to satisfy typings
+      schema: parameters as any,
     }),
   });
 
