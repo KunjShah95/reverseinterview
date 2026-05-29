@@ -353,9 +353,24 @@ export function createLocalAnalysis(input: LocalAnalysisInput): LocalAnalysisRec
       topGreens,
     },
   };
+  function makeId() {
+    try {
+      // prefer Web Crypto / Node crypto if available
+      // @ts-expect-error runtime check
+      if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        // @ts-expect-error runtime
+        return `local-${crypto.randomUUID()}`;
+      }
+    } catch (_) {
+      // fall through to Math-based fallback
+    }
+    // fallback UUID v4-ish generator (not cryptographically strong but fine for local ids)
+    const rnd = () => Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1);
+    return `local-${rnd()}${rnd()}-${rnd()}-${rnd()}-${rnd()}${rnd()}${rnd()}`;
+  }
 
   return {
-    id: `local-${crypto.randomUUID()}`,
+    id: makeId(),
     sessionId: input.sessionId ?? "local",
     company,
     createdAt: now,

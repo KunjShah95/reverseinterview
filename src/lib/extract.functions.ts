@@ -2,7 +2,6 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { callStructured, callText } from "./ai-gateway.server";
 import type { OcrSummary } from "./ocr-types";
-import { createCanvas, loadImage } from "@napi-rs/canvas";
 
 const EXA_SEARCH_URL = "https://api.exa.ai/search";
 const TAVILY_SEARCH_URL = "https://api.tavily.com/search";
@@ -69,31 +68,6 @@ async function getTesseractWorker() {
   return tesseractWorkerPromise;
 }
 
-async function preprocessImageDataUrl(dataUrl: string): Promise<string> {
-  const image = await loadImage(dataUrl);
-  const scale = Math.min(1, OCR_MAX_DIMENSION / Math.max(image.width, image.height));
-  const width = Math.max(1, Math.round(image.width * scale));
-  const height = Math.max(1, Math.round(image.height * scale));
-  const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext("2d");
-  ctx.drawImage(image, 0, 0, width, height);
-
-  const imageData = ctx.getImageData(0, 0, width, height);
-  const data = imageData.data;
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i] ?? 0;
-    const g = data[i + 1] ?? 0;
-    const b = data[i + 2] ?? 0;
-    const gray = Math.round(r * 0.299 + g * 0.587 + b * 0.114);
-    const normalized = gray > 186 ? 255 : gray < 96 ? 0 : gray;
-    data[i] = normalized;
-    data[i + 1] = normalized;
-    data[i + 2] = normalized;
-  }
-  ctx.putImageData(imageData, 0, 0);
-  return canvas.toDataURL("image/png");
-}
-
 async function ocrImageDataUrl(dataUrl: string): Promise<{ text: string; confidence: number; wordCount: number }> {
   const worker = await getTesseractWorker();
   const result = await worker.recognize(dataUrl);
@@ -103,25 +77,6 @@ async function ocrImageDataUrl(dataUrl: string): Promise<{ text: string; confide
   return { text, confidence: Number.isFinite(confidence) ? confidence : 0, wordCount };
 }
 
-async function renderPdfPagesToImages(base64: string, fromPage: number, toPage: number) {
-  const bytes = base64ToBytes(base64);
-  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const pdf = await pdfjs.getDocument({ data: bytes, useWorkerFetch: false, isEvalSupported: false }).promise;
-  const images: Array<{ page: number; dataUrl: string }> = [];
-
-  for (let pageNumber = fromPage; pageNumber <= toPage; pageNumber++) {
-    const page = await pdf.getPage(pageNumber);
-    const viewport = page.getViewport({ scale: 2.0 });
-    const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
-    const ctx = canvas.getContext("2d");
-    await page.render({ canvasContext: ctx as unknown as CanvasRenderingContext2D, viewport }).promise;
-    images.push({ page: pageNumber, dataUrl: canvas.toDataURL("image/png") });
-    page.cleanup();
-  }
-
-  await pdf.destroy();
-  return images;
-}
 
 async function searchExa(query: string, includeDomains?: string[]): Promise<SearchHit[]> {
   const apiKey = getEnv("EXA_API_KEY");
@@ -307,30 +262,14 @@ export const extractPdfPages = createServerFn({ method: "POST" })
         };
       }
 
-      const renderedPages = await renderPdfPagesToImages(data.base64, data.fromPage, data.toPage);
-      const ocrPages: string[] = [];
-      const confidences: number[] = [];
-      const warnings: string[] = ["The PDF appears image-only, so open-source OCR was used."];
-
-      for (const page of renderedPages) {
-        const preprocessed = await preprocessImageDataUrl(page.dataUrl);
-        const result = await ocrImageDataUrl(preprocessed);
-        if (result.text) {
-          ocrPages.push(`--- PAGE ${page.page} ---\n${result.text}`);
-        }
-        confidences.push(result.confidence);
-      }
-
-      const averageConfidence = confidences.length
-        ? confidences.reduce((sum, value) => sum + value, 0) / confidences.length
-        : 0;
-
       return {
-        text: ocrPages.join("\n\n").slice(0, 80_000),
-        pagesExtracted: renderedPages.length,
-        method: "tesseract" as const,
-        confidence: Math.round(averageConfidence),
-        warnings,
+        text: "",
+        pagesExtracted: slice.length,
+        method: "text-extract" as const,
+        confidence: 0,
+        warnings: [
+          "This PDF appears image-only, and binary OCR rendering is disabled in this environment. Try pasting the text or using a screenshot instead.",
+        ],
       };
     } catch (err) {
       throw new Error(classifyPdfError(err));
@@ -347,8 +286,7 @@ export const extractFromImage = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     const dataUrl = `data:${data.mimeType};base64,${data.base64}`;
-    const preprocessed = await preprocessImageDataUrl(dataUrl);
-    const result = await ocrImageDataUrl(preprocessed);
+    const result = await ocrImageDataUrl(dataUrl);
     const warnings: string[] = [];
 
     if (result.confidence < OCR_LOW_CONFIDENCE || result.text.length < 20) {
