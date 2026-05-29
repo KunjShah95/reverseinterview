@@ -28,6 +28,17 @@ CI/CD
 - The `CI` workflow runs lint/typecheck/build on pushes and PRs to `main`.
 - For Vercel deployment, simply connect your GitHub repository to the Vercel dashboard. It will auto-detect the TanStack Start (Nitro) configuration.
 
+Vercel setup checklist:
+
+1. Import the GitHub repo into Vercel.
+2. Keep the default build command as `npm run build`.
+3. Use `dist` as the output directory.
+4. Add the environment variables from `.env.example` in the Vercel project settings.
+5. Set `VITE_SITE_URL` to your deployed domain, for example `https://your-project.vercel.app`.
+6. Redeploy after any env var changes.
+
+The app already includes a Vercel serverless entrypoint in `api/index.js`, so no extra adapter step is needed.
+
 Notes
 
 - Ensure you fill in Vercel's environment variables with the required runtime secrets (see `.env.example`).

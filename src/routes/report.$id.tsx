@@ -16,6 +16,7 @@ import SiteNav from "@/components/SiteNav";
 import SiteFooter from "@/components/SiteFooter";
 import DashboardSidebar from "@/components/DashboardSidebar";
 import { getLocalAnalysis, type LocalAnalysisRecord } from "@/lib/local-analysis";
+import { getAbsoluteUrl } from "@/lib/site-url";
 import type {
   AgentId,
   AnalysisProgress,
@@ -73,12 +74,12 @@ export const Route = createFileRoute("/report/$id")({
         { property: "og:title", content: title },
         { property: "og:description", content: description },
         { property: "og:type", content: "article" },
-        { property: "og:url", content: `https://reverseinterview.vercel.app/report/${params.id}` },
+        { property: "og:url", content: getAbsoluteUrl(`/report/${params.id}`) },
         { name: "twitter:card", content: "summary_large_image" },
         { name: "twitter:title", content: title },
         { name: "twitter:description", content: description },
       ],
-      links: [{ rel: "canonical", href: `https://reverseinterview.vercel.app/report/${params.id}` }],
+      links: [{ rel: "canonical", href: getAbsoluteUrl(`/report/${params.id}`) }],
     };
   },
   component: ReportPage,

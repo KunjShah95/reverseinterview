@@ -9,6 +9,7 @@ import {
   Scripts,
 } from "@tanstack/react-router";
 import { Toaster } from "@/components/ui/sonner";
+import { getAbsoluteUrl, getSiteUrl } from "@/lib/site-url";
 
 import appCss from "../styles.css?url";
 
@@ -125,8 +126,8 @@ function RootShell({ children }: { children: React.ReactNode }) {
               "@context": "https://schema.org",
               "@type": "Organization",
               name: "Reverse Interview AI",
-              url: "https://example.com",
-              logo: "https://example.com/favicon.svg",
+              url: getSiteUrl(),
+              logo: getAbsoluteUrl("/favicon.svg"),
               sameAs: [],
             }),
           }}
@@ -138,7 +139,7 @@ function RootShell({ children }: { children: React.ReactNode }) {
               "@context": "https://schema.org",
               "@type": "WebApplication",
               name: "Reverse Interview AI",
-              url: "https://example.com",
+              url: getSiteUrl(),
               description:
                 "AI-powered job offer analysis. Upload a job post, offer letter, or HR chat. Get toxicity flags, burnout risk, salary fairness, and ghost-hiring signals.",
               applicationCategory: "BusinessApplication",
