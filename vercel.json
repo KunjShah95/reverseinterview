@@ -5,7 +5,17 @@
   "framework": null,
   "routes": [
     {
-      "src": "/(.*)",
+      "src": "^/(?!$)(.*)$",
+      "methods": ["GET"],
+      "has": [
+        { "type": "cookie", "key": "__session", "missing": true },
+        { "type": "header", "key": "accept", "value": "text/html" }
+      ],
+      "status": 302,
+      "destination": "/"
+    },
+    {
+      "src": "(/.*)",
       "dest": "/api/index.js"
     }
   ]
