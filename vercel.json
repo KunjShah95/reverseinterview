@@ -5,8 +5,12 @@
   "framework": null,
   "routes": [
     {
-      "src": "/(.*)",
+      "src": "/api/(.*)",
       "dest": "/api/index.js"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/"
     }
   ]
 }
