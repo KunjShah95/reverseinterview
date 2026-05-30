@@ -147,15 +147,22 @@ function ReportPage() {
         await (document as Document & { fonts?: FontFaceSet }).fonts?.ready;
       }
       await new Promise((resolve) => window.requestAnimationFrame(() => resolve(null)));
-      const canvas = await html2canvas(node, {
-        backgroundColor: "#fbf9f4",
-        scale: 1,
+      let canvas = await html2canvas(node, {
+        backgroundColor: "#f5f1e8",
+        scale: 2,
         useCORS: true,
+        foreignObjectRendering: true,
         windowWidth: Math.min(node.scrollWidth, 1200),
-        windowHeight: node.scrollHeight,
-        scrollX: 0,
-        scrollY: -window.scrollY,
       });
+      if (canvas.width === 0 || canvas.height === 0) {
+        console.warn("foreignObjectRendering returned empty canvas, retrying without it");
+        canvas = await html2canvas(node, {
+          backgroundColor: "#f5f1e8",
+          scale: 2,
+          useCORS: true,
+          windowWidth: Math.min(node.scrollWidth, 1200),
+        });
+      }
       const imgData = canvas.toDataURL("image/jpeg", 0.92);
       const pdf = new jsPDF({ unit: "pt", format: "a4", orientation: "portrait" });
       const pageW = pdf.internal.pageSize.getWidth();
@@ -185,12 +192,13 @@ function ReportPage() {
       const message = (err && (err as any).message) || String(err || "Unknown error");
 
       // Detect common canvas taint/security errors (cross-origin images) and offer a fallback.
-      const isTaintError = /taint|cross-origin|securityerror|domexception/i.test(message) ||
+      const isTaintError =
+        /taint|cross-origin|securityerror|domexception/i.test(message) ||
         (err && (err as any).name && /(SecurityError|DOMException)/i.test((err as any).name));
 
       if (isTaintError) {
         toast.error(
-          "PDF export failed due to cross-origin images (CORS) or a tainted canvas. Try using your browser's Print → Save as PDF or remove third-party images."
+          "PDF export failed due to cross-origin images (CORS) or a tainted canvas. Try using your browser's Print → Save as PDF or remove third-party images.",
         );
         // Offer a graceful fallback — open the print dialog so user can Save as PDF.
         try {
