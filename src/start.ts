@@ -2,15 +2,20 @@ import { clerkMiddleware } from "@clerk/tanstack-react-start/server";
 import { createStart, createMiddleware } from "@tanstack/react-start";
 
 import { renderErrorPage } from "./lib/error-page";
+import { consumeLastCapturedError } from "./lib/error-capture";
 
 const errorMiddleware = createMiddleware().server(async ({ next }) => {
   try {
     return await next();
   } catch (error) {
-    if (error != null && typeof error === "object" && "statusCode" in error) {
+    // Treat both `status` (common) and `statusCode` (some libraries) as HTTP errors
+    if (error != null && typeof error === "object" && ("status" in error || "statusCode" in error)) {
       throw error;
     }
-    console.error(error);
+
+    // Log the thrown error and any out-of-band captured error (helps when h3/swallowed stacks)
+    const original = consumeLastCapturedError();
+    console.error("Unhandled error in request middleware:", error, original ?? "(no captured error)");
     return new Response(renderErrorPage(), {
       status: 500,
       headers: { "content-type": "text/html; charset=utf-8" },
