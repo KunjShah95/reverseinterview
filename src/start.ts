@@ -5,7 +5,17 @@ import { renderErrorPage } from "./lib/error-page";
 import { consumeLastCapturedError } from "./lib/error-capture";
 
 // Session cookie name can be overridden with SESSION_COOKIE_NAME env var
-const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || "__session";
+// Clerk dev instances use __clerk_db_jwt instead of __session
+const SESSION_COOKIE_NAMES = [
+  process.env.SESSION_COOKIE_NAME,
+  "__session",
+  "__clerk_db_jwt",
+].filter(Boolean) as string[];
+
+function hasSessionCookie(cookieHeader: string): boolean {
+  if (!cookieHeader) return false;
+  return SESSION_COOKIE_NAMES.some((name) => cookieHeader.includes(`${name}=`));
+}
 
 const sessionRedirectMiddleware = createMiddleware().server(async ({ request, next }) => {
   try {
@@ -31,7 +41,7 @@ const sessionRedirectMiddleware = createMiddleware().server(async ({ request, ne
     }
 
     const cookieHeader = request.headers.get("cookie") || "";
-    if (!cookieHeader.includes(`${SESSION_COOKIE_NAME}=`)) {
+    if (!hasSessionCookie(cookieHeader)) {
       // No session cookie -> send visitor to landing page
       return Response.redirect(`${url.origin}/`, 302);
     }
@@ -48,13 +58,21 @@ const errorMiddleware = createMiddleware().server(async ({ next }) => {
     return await next();
   } catch (error) {
     // Treat both `status` (common) and `statusCode` (some libraries) as HTTP errors
-    if (error != null && typeof error === "object" && ("status" in error || "statusCode" in error)) {
+    if (
+      error != null &&
+      typeof error === "object" &&
+      ("status" in error || "statusCode" in error)
+    ) {
       throw error;
     }
 
     // Log the thrown error and any out-of-band captured error (helps when h3/swallowed stacks)
     const original = consumeLastCapturedError();
-    console.error("Unhandled error in request middleware:", error, original ?? "(no captured error)");
+    console.error(
+      "Unhandled error in request middleware:",
+      error,
+      original ?? "(no captured error)",
+    );
     return new Response(renderErrorPage(), {
       status: 500,
       headers: { "content-type": "text/html; charset=utf-8" },

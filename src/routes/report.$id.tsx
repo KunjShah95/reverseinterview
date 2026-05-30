@@ -130,9 +130,7 @@ function ReportPage() {
         <div className="lg:hidden">
           <SiteNav solid />
         </div>
-        <div className="pt-36 px-6 text-center text-body">
-          This analysis could not be loaded.
-        </div>
+        <div className="pt-36 px-6 text-center text-body">This analysis could not be loaded.</div>
       </div>
     );
   }
@@ -151,9 +149,9 @@ function ReportPage() {
       await new Promise((resolve) => window.requestAnimationFrame(() => resolve(null)));
       const canvas = await html2canvas(node, {
         backgroundColor: "#fbf9f4",
-        scale: 1.5,
+        scale: 1,
         useCORS: true,
-        windowWidth: node.scrollWidth,
+        windowWidth: Math.min(node.scrollWidth, 1200),
         windowHeight: node.scrollHeight,
         scrollX: 0,
         scrollY: -window.scrollY,
@@ -182,8 +180,28 @@ function ReportPage() {
         .slice(0, 40);
       pdf.save(`reverse-interview-${safeCompany || "report"}.pdf`);
     } catch (err) {
-      console.error(err);
-      toast.error("PDF export failed. Try again or use your browser's print → save as PDF.");
+      // Surface richer error info for debugging and provide helpful guidance to users.
+      console.error("PDF export error:", err);
+      const message = (err && (err as any).message) || String(err || "Unknown error");
+
+      // Detect common canvas taint/security errors (cross-origin images) and offer a fallback.
+      const isTaintError = /taint|cross-origin|securityerror|domexception/i.test(message) ||
+        (err && (err as any).name && /(SecurityError|DOMException)/i.test((err as any).name));
+
+      if (isTaintError) {
+        toast.error(
+          "PDF export failed due to cross-origin images (CORS) or a tainted canvas. Try using your browser's Print → Save as PDF or remove third-party images."
+        );
+        // Offer a graceful fallback — open the print dialog so user can Save as PDF.
+        try {
+          window.print();
+        } catch (printErr) {
+          console.error("Print fallback failed:", printErr);
+        }
+      } else {
+        // Generic error: show message and suggest print fallback.
+        toast.error(`PDF export failed: ${message}. Try your browser's Print → Save as PDF.`);
+      }
     } finally {
       setDownloading(false);
     }
@@ -216,8 +234,8 @@ function ReportPage() {
           <SimulationCard r={r} progress={progress} />
           <NegotiationCard r={r} progress={progress} />
           <p className="text-xs text-body/70 text-center pt-6">
-            Signals are interpretive, not factual claims. Always do your own
-            research before accepting an offer.
+            Signals are interpretive, not factual claims. Always do your own research before
+            accepting an offer.
           </p>
         </div>
       </div>
@@ -249,13 +267,7 @@ function ReportPage() {
   );
 }
 
-function ReportErrorView({
-  error,
-  reset,
-}: {
-  error: Error;
-  reset: () => void;
-}) {
+function ReportErrorView({ error, reset }: { error: Error; reset: () => void }) {
   const router = useRouter();
 
   return (
@@ -307,9 +319,7 @@ function VerdictHero({
             </span>
             <span className="text-sm text-body">
               {r.roleTitle || "Role pending"} /{" "}
-              <span className="font-medium text-ink">
-                {r.company || "Company pending"}
-              </span>
+              <span className="font-medium text-ink">{r.company || "Company pending"}</span>
             </span>
           </div>
           <h1
@@ -357,13 +367,7 @@ function VerdictHero({
   );
 }
 
-function TruthScoreCard({
-  r,
-  progress,
-}: {
-  r: PartialAnalysisResult;
-  progress: AnalysisProgress;
-}) {
+function TruthScoreCard({ r, progress }: { r: PartialAnalysisResult; progress: AnalysisProgress }) {
   if (!r.orchestrator) {
     return <SectionFallback title="TruthScore breakdown" progress={progress.orchestrator} />;
   }
@@ -389,11 +393,7 @@ function TruthScoreCard({
                 style={{
                   width: `${it.v}%`,
                   backgroundColor:
-                    it.v >= 65
-                      ? "var(--safe)"
-                      : it.v >= 35
-                        ? "var(--caution)"
-                        : "var(--danger)",
+                    it.v >= 65 ? "var(--safe)" : it.v >= 35 ? "var(--caution)" : "var(--danger)",
                 }}
               />
             </div>
@@ -408,21 +408,15 @@ function TruthScoreCard({
   );
 }
 
-function ToxicityCard({
-  r,
-  progress,
-}: {
-  r: PartialAnalysisResult;
-  progress: AnalysisProgress;
-}) {
+function ToxicityCard({ r, progress }: { r: PartialAnalysisResult; progress: AnalysisProgress }) {
   if (!r.culture) {
     return <SectionFallback title="Culture & toxicity" progress={progress.culture} />;
   }
   return (
     <Card title="Culture & toxicity" subtitle={r.culture.summary}>
       <div className="text-sm text-ink mb-3">
-        Toxicity score:{" "}
-        <span className="font-semibold">{Math.round(r.culture.toxicityScore)}</span>/100
+        Toxicity score: <span className="font-semibold">{Math.round(r.culture.toxicityScore)}</span>
+        /100
       </div>
       <div className="space-y-3">
         {r.culture.flags.length === 0 && (
@@ -495,13 +489,7 @@ function BurnoutGhostCard({
   );
 }
 
-function SalaryCard({
-  r,
-  progress,
-}: {
-  r: PartialAnalysisResult;
-  progress: AnalysisProgress;
-}) {
+function SalaryCard({ r, progress }: { r: PartialAnalysisResult; progress: AnalysisProgress }) {
   if (!r.salary) {
     return <SectionFallback title="Salary fairness" progress={progress.salary} />;
   }
@@ -527,8 +515,7 @@ function SalaryCard({
         </span>
       </div>
       <p className="text-sm text-ink">
-        <span className="font-medium">Estimated market range:</span>{" "}
-        {r.salary.marketRangeEstimate}
+        <span className="font-medium">Estimated market range:</span> {r.salary.marketRangeEstimate}
       </p>
       <p className="mt-2 text-sm text-body">{r.salary.reasoning}</p>
     </Card>
@@ -578,10 +565,7 @@ function ReverseQuestionsCard({
     return <SectionFallback title="Questions you should ask back" progress={progress.reverse} />;
   }
   return (
-    <Card
-      title="Questions you should ask back"
-      subtitle="Paste these into your next conversation."
-    >
+    <Card title="Questions you should ask back" subtitle="Paste these into your next conversation.">
       <ol className="space-y-3">
         {r.reverse.questions.map((q, i) => (
           <li key={i} className="rounded-lg border border-ink/10 bg-cream/40 p-3">
@@ -604,13 +588,7 @@ function ReverseQuestionsCard({
   );
 }
 
-function SimulationCard({
-  r,
-  progress,
-}: {
-  r: PartialAnalysisResult;
-  progress: AnalysisProgress;
-}) {
+function SimulationCard({ r, progress }: { r: PartialAnalysisResult; progress: AnalysisProgress }) {
   if (!r.simulation) {
     return <SectionFallback title="If you join - a simulation" progress={progress.simulation} />;
   }
@@ -618,15 +596,13 @@ function SimulationCard({
     <Card
       title="If you join — a simulation"
       subtitle={`Promotion likelihood: ${Math.round(
-        r.simulation.promotionProbability
+        r.simulation.promotionProbability,
       )}% · Retention: ${Math.round(r.simulation.retentionProbability)}%`}
     >
       <div className="grid gap-4 md:grid-cols-3">
         {r.simulation.phases.map((p) => (
           <div key={p.label} className="rounded-xl border border-ink/10 bg-cream/40 p-4">
-            <p className="text-xs font-medium uppercase tracking-wider text-ink/60">
-              {p.label}
-            </p>
+            <p className="text-xs font-medium uppercase tracking-wider text-ink/60">{p.label}</p>
             <p className="mt-2 text-sm text-ink leading-relaxed">{p.narrative}</p>
             <div className="mt-3 space-y-1.5">
               <MiniBar label="Stress" v={p.stress} invert />
@@ -688,7 +664,7 @@ function AgentProgressPanel({
   status: AnalysisStatus;
 }) {
   const complete = AGENT_LABELS.filter(
-    (agent) => progress?.[agent.id]?.status === "complete"
+    (agent) => progress?.[agent.id]?.status === "complete",
   ).length;
   return (
     <Card
@@ -756,13 +732,7 @@ function SectionFallback({
   );
 }
 
-function MiniStatus({
-  label,
-  progress,
-}: {
-  label: string;
-  progress?: AnalysisProgress[AgentId];
-}) {
+function MiniStatus({ label, progress }: { label: string; progress?: AnalysisProgress[AgentId] }) {
   return (
     <div className="rounded-xl border border-ink/10 bg-cream/40 p-3">
       <p className="text-xs text-body">{label}</p>
@@ -794,8 +764,7 @@ function Card({
 }
 
 function SeverityChip({ s }: { s: Severity }) {
-  const bg =
-    s === "high" ? "var(--danger)" : s === "medium" ? "var(--caution)" : "var(--safe)";
+  const bg = s === "high" ? "var(--danger)" : s === "medium" ? "var(--caution)" : "var(--safe)";
   return (
     <span
       className="shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-white"
@@ -813,10 +782,7 @@ function Gauge({ label, v }: { label: string; v: number }) {
       <p className="text-xs text-body">{label}</p>
       <p className="mt-1 font-display text-3xl text-ink">{Math.round(v)}</p>
       <div className="mt-2 h-1.5 rounded-full bg-ink/10 overflow-hidden">
-        <div
-          className="h-full rounded-full"
-          style={{ width: `${v}%`, backgroundColor: color }}
-        />
+        <div className="h-full rounded-full" style={{ width: `${v}%`, backgroundColor: color }} />
       </div>
     </div>
   );
