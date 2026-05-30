@@ -1,0 +1,826 @@
+import { callStructured, AIServiceError } from "./ai-gateway.server";
+import type {
+  CultureAgent,
+  BurnoutAgent,
+  SalaryAgent,
+  GhostAgent,
+  NegotiationAgent,
+  ReverseAgent,
+  LieAgent,
+  SimulationAgent,
+  CriticAgent,
+  Orchestrator,
+} from "./analysis-types";
+
+export type AnalysisInput = {
+  sourceText: string;
+  company?: string;
+  roleTitle?: string;
+  offeredSalary?: string;
+  location?: string;
+  yearsExperience?: string;
+};
+
+const SYSTEM_BASE = `You are a specialist job-offer analyst. You read job posts, offer letters, and recruiter messages and return honest, evidence-backed analysis. Only flag what the text actually supports — do not invent signals. If there isn't enough information to assess something, say so clearly.`;
+
+function systemPrompt(role: string, instructions: string): string {
+  return `${SYSTEM_BASE}
+
+Your specialty: ${role}
+
+${instructions}`;
+}
+
+const COMMON_PARAMS = {
+  model: undefined as any,
+  toolDescription: "",
+  parameters: {} as Record<string, unknown>,
+};
+
+function userPrompt(text: string, extra?: string): string {
+  return `Analyze this job text carefully. Base your analysis ONLY on what the text says.
+
+TEXT TO ANALYZE:
+---
+${text}
+---
+${extra ? `\n${extra}` : ""}`;
+}
+
+export async function runCultureAgent(input: AnalysisInput): Promise<CultureAgent> {
+  const result = await callStructured<{
+    toxicityScore: number;
+    flags: Array<{ phrase: string; hiddenMeaning: string; severity: "low" | "medium" | "high" }>;
+    summary: string;
+  }>({
+    toolName: "cultureAnalysis",
+    toolDescription:
+      "Analyze company culture signals, toxicity flags, and loaded language in the job text.",
+    parameters: {
+      type: "object",
+      properties: {
+        toxicityScore: {
+          type: "number",
+          description: "Overall toxicity score 0-100. 0=healthy, 100=extremely toxic.",
+          minimum: 0,
+          maximum: 100,
+        },
+        flags: {
+          type: "array",
+          description:
+            "Specific loaded phrases found in the text with their hidden meaning. Max 6 flags.",
+          items: {
+            type: "object",
+            properties: {
+              phrase: { type: "string", description: "The actual phrase from the text" },
+              hiddenMeaning: {
+                type: "string",
+                description: "What this phrase often implies in practice",
+              },
+              severity: { type: "string", enum: ["low", "medium", "high"] },
+            },
+            required: ["phrase", "hiddenMeaning", "severity"],
+          },
+        },
+        summary: { type: "string", description: "1-2 sentence summary of culture signals found" },
+      },
+      required: ["toxicityScore", "flags", "summary"],
+    },
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt(
+          "Culture & Toxicity Analyst",
+          `Analyze the job text for:
+- Loaded language ("rockstar", "ninja", "family", "hustle", "grind")
+- Culture red flags (lack of boundaries, vague expectations, flat hierarchy warnings)
+- Work-life balance signals
+- Diversity and inclusion substance vs. performance
+- Signs of toxic environments from the text
+
+Score toxicity 0-100 based ONLY on what the text contains. Return empty flags array if no toxicity found.`,
+        ),
+      },
+      { role: "user", content: userPrompt(input.sourceText) },
+    ],
+  });
+  return {
+    toxicityScore: Math.max(0, Math.min(100, Math.round(result.arguments.toxicityScore))),
+    flags: result.arguments.flags.slice(0, 6),
+    summary: result.arguments.summary,
+  };
+}
+
+export async function runBurnoutAgent(input: AnalysisInput): Promise<BurnoutAgent> {
+  const result = await callStructured<{
+    burnoutRisk: number;
+    overtimeProbability: number;
+    signals: string[];
+    summary: string;
+  }>({
+    toolName: "burnoutAnalysis",
+    toolDescription:
+      "Assess burnout risk, overtime expectations, and workload sustainability from the job text.",
+    parameters: {
+      type: "object",
+      properties: {
+        burnoutRisk: {
+          type: "number",
+          description: "Burnout risk score 0-100. 0=very sustainable, 100=extremely high risk.",
+          minimum: 0,
+          maximum: 100,
+        },
+        overtimeProbability: {
+          type: "number",
+          description: "Likelihood of regular overtime 0-100.",
+          minimum: 0,
+          maximum: 100,
+        },
+        signals: {
+          type: "array",
+          description: "Specific workload or burnout signals found. Max 5.",
+          items: { type: "string" },
+        },
+        summary: { type: "string", description: "1-2 sentence burnout risk summary" },
+      },
+      required: ["burnoutRisk", "overtimeProbability", "signals", "summary"],
+    },
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt(
+          "Burnout Risk Analyst",
+          `Analyze the job text for:
+- Overtime signals (urgent hiring, "fast-paced", "wear many hats", on-call expectations)
+- Workload intensity indicators
+- Turnover risk signs
+- Work-life balance claims vs. implied expectations
+- Team size and support structure hints
+- "Unlimited PTO" and similar patterns
+
+Score burnout risk and overtime probability 0-100 based ONLY on evidence in the text.`,
+        ),
+      },
+      { role: "user", content: userPrompt(input.sourceText) },
+    ],
+  });
+  return {
+    burnoutRisk: Math.max(0, Math.min(100, Math.round(result.arguments.burnoutRisk))),
+    overtimeProbability: Math.max(
+      0,
+      Math.min(100, Math.round(result.arguments.overtimeProbability)),
+    ),
+    signals: result.arguments.signals.slice(0, 5),
+    summary: result.arguments.summary,
+  };
+}
+
+export async function runSalaryAgent(input: AnalysisInput): Promise<SalaryAgent> {
+  const result = await callStructured<{
+    verdict: "underpaid" | "fair" | "overpaid" | "unknown";
+    marketRangeEstimate: string;
+    confidence: "low" | "medium" | "high";
+    reasoning: string;
+  }>({
+    toolName: "salaryAnalysis",
+    toolDescription:
+      "Evaluate salary and compensation fairness from the job text and any additional context.",
+    parameters: {
+      type: "object",
+      properties: {
+        verdict: {
+          type: "string",
+          enum: ["underpaid", "fair", "overpaid", "unknown"],
+          description: "Fairness verdict based on available information",
+        },
+        marketRangeEstimate: {
+          type: "string",
+          description: "Estimated market range for this role, or note if insufficient data",
+        },
+        confidence: {
+          type: "string",
+          enum: ["low", "medium", "high"],
+          description: "Confidence in the salary assessment",
+        },
+        reasoning: {
+          type: "string",
+          description: "2-3 sentence explanation of the salary verdict",
+        },
+      },
+      required: ["verdict", "marketRangeEstimate", "confidence", "reasoning"],
+    },
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt(
+          "Compensation Analyst",
+          `Analyze the job text for compensation signals:
+- Salary range transparency vs. vagueness
+- Whether stated salary matches role seniority expectations
+- Equity, bonus, and benefits quality
+- Location-based compensation context
+- Stock/options language quality
+
+Use the provided offeredSalary, location, yearsExperience if supplied as additional context.
+
+Verdict meaning:
+- underpaid: compensation is clearly below what the role/scope demands
+- fair: compensation seems reasonable for the described scope
+- overpaid: compensation appears above market (rare)
+- unknown: not enough compensation data to judge
+
+Base verdict ONLY on what the text and provided context supports.`,
+        ),
+      },
+      {
+        role: "user",
+        content: userPrompt(
+          input.sourceText,
+          [
+            input.offeredSalary && `Offered salary/compensation: ${input.offeredSalary}`,
+            input.location && `Location: ${input.location}`,
+            input.yearsExperience && `Candidate experience: ${input.yearsExperience} years`,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        ),
+      },
+    ],
+  });
+  return {
+    verdict: result.arguments.verdict,
+    marketRangeEstimate: result.arguments.marketRangeEstimate,
+    confidence: result.arguments.confidence,
+    reasoning: result.arguments.reasoning,
+  };
+}
+
+export async function runGhostAgent(input: AnalysisInput): Promise<GhostAgent> {
+  const result = await callStructured<{
+    ghostScore: number;
+    signals: string[];
+    summary: string;
+  }>({
+    toolName: "ghostHiringAnalysis",
+    toolDescription:
+      "Detect ghost-hiring signals — fake job postings, phantom listings, non-genuine hiring intent.",
+    parameters: {
+      type: "object",
+      properties: {
+        ghostScore: {
+          type: "number",
+          description: "Ghost-hiring risk score 0-100. 0=genuine post, 100=definitely ghost.",
+          minimum: 0,
+          maximum: 100,
+        },
+        signals: {
+          type: "array",
+          description: "Specific ghost-hiring signals found. Max 5.",
+          items: { type: "string" },
+        },
+        summary: { type: "string", description: "1-2 sentence ghost-hiring assessment" },
+      },
+      required: ["ghostScore", "signals", "summary"],
+    },
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt(
+          "Ghost-Hiring Detection Specialist",
+          `Analyze the job text for ghost-hiring indicators:
+- Fake urgency ("URGENT", "ASAP", "immediately")
+- Vague or recycled job descriptions
+- "Always hiring" or perpetually open postings
+- No specific team, manager, or reporting structure
+- Repeated reposting patterns in language
+- Too-good-to-be-true offers with unclear details
+- Overly broad scope with no clear ownership
+- Missing salary bands or concrete details
+
+Return ghostScore 0-100 based ONLY on evidence in the text. A score over 50 suggests reason to verify the listing's authenticity.`,
+        ),
+      },
+      { role: "user", content: userPrompt(input.sourceText) },
+    ],
+  });
+  return {
+    ghostScore: Math.max(0, Math.min(100, Math.round(result.arguments.ghostScore))),
+    signals: result.arguments.signals.slice(0, 5),
+    summary: result.arguments.summary,
+  };
+}
+
+export async function runNegotiationAgent(input: AnalysisInput): Promise<NegotiationAgent> {
+  const company = input.company || "the company";
+  const role = input.roleTitle || "the role";
+  const result = await callStructured<{
+    talkingPoints: string[];
+    counterOfferTemplate: string;
+    redLines: string[];
+  }>({
+    toolName: "negotiationStrategy",
+    toolDescription:
+      "Generate negotiation talking points, counter-offer template, and red lines based on the job text analysis.",
+    parameters: {
+      type: "object",
+      properties: {
+        talkingPoints: {
+          type: "array",
+          description: "3-5 negotiation talking points specific to this role and text",
+          items: { type: "string" },
+        },
+        counterOfferTemplate: {
+          type: "string",
+          description:
+            "A 2-3 sentence professional counter-offer template addressing specific concerns from the text",
+        },
+        redLines: {
+          type: "array",
+          description: "2-4 non-negotiable red lines specific to this job",
+          items: { type: "string" },
+        },
+      },
+      required: ["talkingPoints", "counterOfferTemplate", "redLines"],
+    },
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt(
+          "Negotiation Coach",
+          `Read the job text and generate specific negotiation advice:
+- Identify points of leverage from the job description itself
+- Spot areas where the candidate should push back or clarify
+- Identify potential red flags that should be dealbreakers unless addressed
+- Base all advice on actual content in the text — do not make generic suggestions`,
+        ),
+      },
+      { role: "user", content: userPrompt(input.sourceText, `Company: ${company}\nRole: ${role}`) },
+    ],
+  });
+  return {
+    talkingPoints: result.arguments.talkingPoints.slice(0, 5),
+    counterOfferTemplate: result.arguments.counterOfferTemplate,
+    redLines: result.arguments.redLines.slice(0, 4),
+  };
+}
+
+export async function runReverseAgent(input: AnalysisInput): Promise<ReverseAgent> {
+  const company = input.company || "the company";
+  const role = input.roleTitle || "the role";
+  const result = await callStructured<{
+    questions: Array<{
+      q: string;
+      why: string;
+      category: "Workload" | "Culture" | "Compensation" | "Growth" | "Stability";
+    }>;
+  }>({
+    toolName: "reverseInterviewQuestions",
+    toolDescription:
+      "Generate sharp, specific questions the candidate should ask the employer during interviews.",
+    parameters: {
+      type: "object",
+      properties: {
+        questions: {
+          type: "array",
+          description: "3-5 questions to ask during the interview process",
+          items: {
+            type: "object",
+            properties: {
+              q: { type: "string", description: "The question to ask" },
+              why: {
+                type: "string",
+                description: "Why this question matters for this specific role",
+              },
+              category: {
+                type: "string",
+                enum: ["Workload", "Culture", "Compensation", "Growth", "Stability"],
+              },
+            },
+            required: ["q", "why", "category"],
+          },
+        },
+      },
+      required: ["questions"],
+    },
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt(
+          "Reverse Interview Specialist",
+          `Read the job text and generate questions the candidate should ask back. Each question should:
+- Target a specific claim or gap in the job description
+- Reveal information the employer is not volunteering
+- Be practical and actionable for the candidate
+- Cover different categories (Workload, Culture, Compensation, Growth, Stability)`,
+        ),
+      },
+      { role: "user", content: userPrompt(input.sourceText, `Company: ${company}\nRole: ${role}`) },
+    ],
+  });
+  return {
+    questions: result.arguments.questions.slice(0, 5),
+  };
+}
+
+export async function runLieAgent(input: AnalysisInput): Promise<LieAgent> {
+  const result = await callStructured<{
+    mismatches: Array<{
+      claim: string;
+      evidence: string;
+      confidence: "low" | "medium" | "high";
+    }>;
+    summary: string;
+  }>({
+    toolName: "claimVerification",
+    toolDescription:
+      "Find contradictions, inconsistencies, and unsupported claims within the job text itself.",
+    parameters: {
+      type: "object",
+      properties: {
+        mismatches: {
+          type: "array",
+          description: "Internal contradictions found in the text. Max 4.",
+          items: {
+            type: "object",
+            properties: {
+              claim: { type: "string", description: "The claim or promise made" },
+              evidence: {
+                type: "string",
+                description: "Contradicting evidence from elsewhere in the text",
+              },
+              confidence: { type: "string", enum: ["low", "medium", "high"] },
+            },
+            required: ["claim", "evidence", "confidence"],
+          },
+        },
+        summary: { type: "string", description: "1-2 sentence summary of findings" },
+      },
+      required: ["mismatches", "summary"],
+    },
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt(
+          "HR Claim Verifier / Lie Detector",
+          `Read the job text carefully and identify:
+- Statements that contradict each other within the same text
+- Claims that sound good but are undercut by other details
+- "Unlimited PTO" paired with high workload signals
+- "Work-life balance" paired with urgent/on-call language
+- "Flat hierarchy" paired with undefined decision-making
+- Vague promises paired with concrete demands
+- Any other internal inconsistencies
+
+Only flag contradictions that are genuinely present in the text. Do not assume or infer contradictions that aren't there. Return empty mismatches array if none found.`,
+        ),
+      },
+      { role: "user", content: userPrompt(input.sourceText) },
+    ],
+  });
+  return {
+    mismatches: result.arguments.mismatches.slice(0, 4),
+    summary: result.arguments.summary,
+  };
+}
+
+export async function runSimulationAgent(input: AnalysisInput): Promise<SimulationAgent> {
+  const result = await callStructured<{
+    phases: Array<{
+      label: "6 months in" | "1 year in" | "2 years in";
+      narrative: string;
+      stress: number;
+      growth: number;
+      learning: number;
+    }>;
+    promotionProbability: number;
+    retentionProbability: number;
+  }>({
+    toolName: "careerSimulation",
+    toolDescription:
+      "Simulate the candidate's likely experience at 6 months, 1 year, and 2 years based on the job text.",
+    parameters: {
+      type: "object",
+      properties: {
+        phases: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              label: {
+                type: "string",
+                enum: ["6 months in", "1 year in", "2 years in"],
+              },
+              narrative: {
+                type: "string",
+                description:
+                  "Realistic narrative of what the experience may feel like at this point",
+              },
+              stress: {
+                type: "number",
+                description: "Expected stress level 0-100 at this phase",
+                minimum: 0,
+                maximum: 100,
+              },
+              growth: {
+                type: "number",
+                description: "Expected career growth 0-100 at this phase",
+                minimum: 0,
+                maximum: 100,
+              },
+              learning: {
+                type: "number",
+                description: "Expected learning/development 0-100 at this phase",
+                minimum: 0,
+                maximum: 100,
+              },
+            },
+            required: ["label", "narrative", "stress", "growth", "learning"],
+          },
+        },
+        promotionProbability: {
+          type: "number",
+          description: "Probability of promotion within 2 years 0-100",
+          minimum: 0,
+          maximum: 100,
+        },
+        retentionProbability: {
+          type: "number",
+          description: "Probability of staying 2+ years 0-100",
+          minimum: 0,
+          maximum: 100,
+        },
+      },
+      required: ["phases", "promotionProbability", "retentionProbability"],
+    },
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt(
+          "Career Simulation Analyst",
+          `Read the job text and simulate realistic career progression:
+- Project how the role will evolve at 6 months, 1 year, and 2 years
+- Base stress/growth/learning scores on text evidence (urgency, scope, learning opportunities)
+- Consider the maturity of the company and role definition
+- Be realistic — do not sugarcoat or catastrophize
+- Scores should vary across phases to reflect real dynamics`,
+        ),
+      },
+      { role: "user", content: userPrompt(input.sourceText) },
+    ],
+  });
+  return {
+    phases: result.arguments.phases as SimulationAgent["phases"],
+    promotionProbability: Math.max(
+      0,
+      Math.min(100, Math.round(result.arguments.promotionProbability)),
+    ),
+    retentionProbability: Math.max(
+      0,
+      Math.min(100, Math.round(result.arguments.retentionProbability)),
+    ),
+  };
+}
+
+export async function runCriticAgent(
+  input: AnalysisInput,
+  specialistResults: Record<string, unknown>,
+  specialistErrors: Record<string, string>,
+): Promise<CriticAgent> {
+  const result = await callStructured<{
+    unsupportedClaims: string[];
+    contradictions: string[];
+    confidenceWarnings: string[];
+    summary: string;
+  }>({
+    toolName: "criticReview",
+    toolDescription:
+      "Review all specialist analyses for quality issues, contradictions, unsupported claims, and confidence warnings.",
+    parameters: {
+      type: "object",
+      properties: {
+        unsupportedClaims: {
+          type: "array",
+          description:
+            "Claims made by specialists that are not supported by the original job text. Max 4.",
+          items: { type: "string" },
+        },
+        contradictions: {
+          type: "array",
+          description: "Contradictions between different specialist analyses. Max 4.",
+          items: { type: "string" },
+        },
+        confidenceWarnings: {
+          type: "array",
+          description: "Warnings about analysis quality or confidence. Max 3.",
+          items: { type: "string" },
+        },
+        summary: {
+          type: "string",
+          description: "1-2 sentence quality assessment of the overall analysis",
+        },
+      },
+      required: ["unsupportedClaims", "contradictions", "confidenceWarnings", "summary"],
+    },
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt(
+          "Analysis Critic / Quality Reviewer",
+          `Review all specialist analysis results for a job text analysis. Your job is to catch:
+- Claims that go beyond what the original job text supports
+- Contradictions between different specialist assessments
+- Overconfidence where evidence is thin
+- Missing important signals the specialists overlooked
+
+Be honest and constructive. Do not invent problems. The goal is quality, not criticism for its own sake.`,
+        ),
+      },
+      {
+        role: "user",
+        content: `ORIGINAL JOB TEXT:
+---
+${input.sourceText}
+---
+
+${input.company ? `Company: ${input.company}` : ""}
+${input.roleTitle ? `Role: ${input.roleTitle}` : ""}
+
+SPECIALIST RESULTS:
+${JSON.stringify(specialistResults, null, 2)}
+
+SPECIALIST ERRORS:
+${JSON.stringify(specialistErrors, null, 2)}
+
+Review these analyses for quality issues. Focus on whether they stay grounded in the original text.`,
+      },
+    ],
+  });
+  return {
+    unsupportedClaims: result.arguments.unsupportedClaims.slice(0, 4),
+    contradictions: result.arguments.contradictions.slice(0, 4),
+    confidenceWarnings: result.arguments.confidenceWarnings.slice(0, 3),
+    summary: result.arguments.summary,
+  };
+}
+
+export async function runOrchestratorAgent(
+  input: AnalysisInput,
+  specialistResults: Record<string, unknown>,
+  specialistErrors: Record<string, string>,
+  critic: CriticAgent | null,
+): Promise<Orchestrator> {
+  const result = await callStructured<{
+    recommendation: "proceed" | "caution" | "avoid";
+    verdict: string;
+    truthScore: {
+      transparency: number;
+      workLifeBalance: number;
+      careerGrowth: number;
+      hiringIntegrity: number;
+      compensationFairness: number;
+    };
+    topRisks: string[];
+    topGreens: string[];
+  }>({
+    toolName: "finalVerdict",
+    toolDescription:
+      "Produce the final TruthScore, recommendation, and summary verdict combining all specialist analyses.",
+    parameters: {
+      type: "object",
+      properties: {
+        recommendation: {
+          type: "string",
+          enum: ["proceed", "caution", "avoid"],
+        },
+        verdict: {
+          type: "string",
+          description: "A single compelling sentence summarizing the overall assessment",
+        },
+        truthScore: {
+          type: "object",
+          properties: {
+            transparency: {
+              type: "number",
+              description: "How honest and transparent the posting seems 0-100",
+              minimum: 0,
+              maximum: 100,
+            },
+            workLifeBalance: {
+              type: "number",
+              description: "Expected work-life balance quality 0-100",
+              minimum: 0,
+              maximum: 100,
+            },
+            careerGrowth: {
+              type: "number",
+              description: "Opportunities for growth and learning 0-100",
+              minimum: 0,
+              maximum: 100,
+            },
+            hiringIntegrity: {
+              type: "number",
+              description: "Whether the hiring process appears genuine 0-100",
+              minimum: 0,
+              maximum: 100,
+            },
+            compensationFairness: {
+              type: "number",
+              description: "Fairness of compensation based on available data 0-100",
+              minimum: 0,
+              maximum: 100,
+            },
+          },
+          required: [
+            "transparency",
+            "workLifeBalance",
+            "careerGrowth",
+            "hiringIntegrity",
+            "compensationFairness",
+          ],
+        },
+        topRisks: {
+          type: "array",
+          description: "Top 3 risks the candidate should be aware of",
+          items: { type: "string" },
+        },
+        topGreens: {
+          type: "array",
+          description: "Top 3 positive signals or green flags",
+          items: { type: "string" },
+        },
+      },
+      required: ["recommendation", "verdict", "truthScore", "topRisks", "topGreens"],
+    },
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt(
+          "Senior Reviewer / Final Verdict",
+          `You are the senior reviewer. You have access to all specialist analyses and the critic review. Your job is to:
+1. Weigh all evidence and produce a single clear recommendation: proceed, caution, or avoid
+2. Assign TruthScore dimensions (0-100 each) based on the overall evidence
+3. Write a compelling one-sentence verdict that captures the essence
+4. List the top 3 risks and top 3 green flags
+
+Be honest and balanced. A "caution" or "avoid" should only come when there is genuine evidence of problems. A "proceed" should acknowledge any open questions.
+
+Each TruthScore dimension should reflect genuine analysis:
+- transparency: how much the posting hides vs reveals
+- workLifeBalance: real workload expectations
+- careerGrowth: advancement opportunities visible in the text
+- hiringIntegrity: whether the process feels genuine
+- compensationFairness: pay relative to expectations`,
+        ),
+      },
+      {
+        role: "user",
+        content: `ORIGINAL JOB TEXT:
+---
+${input.sourceText}
+---
+
+${input.company ? `Company: ${input.company}` : ""}
+${input.roleTitle ? `Role: ${input.roleTitle}` : ""}
+
+SPECIALIST RESULTS:
+${JSON.stringify(specialistResults, null, 2)}
+
+SPECIALIST ERRORS:
+${JSON.stringify(specialistErrors, null, 2)}
+
+CRITIC REVIEW:
+${critic ? JSON.stringify(critic, null, 2) : "Not available"}
+
+Produce your final verdict. Be honest and evidence-based.`,
+      },
+    ],
+  });
+  return {
+    recommendation: result.arguments.recommendation,
+    verdict: result.arguments.verdict,
+    truthScore: {
+      transparency: Math.max(
+        0,
+        Math.min(100, Math.round(result.arguments.truthScore.transparency)),
+      ),
+      workLifeBalance: Math.max(
+        0,
+        Math.min(100, Math.round(result.arguments.truthScore.workLifeBalance)),
+      ),
+      careerGrowth: Math.max(
+        0,
+        Math.min(100, Math.round(result.arguments.truthScore.careerGrowth)),
+      ),
+      hiringIntegrity: Math.max(
+        0,
+        Math.min(100, Math.round(result.arguments.truthScore.hiringIntegrity)),
+      ),
+      compensationFairness: Math.max(
+        0,
+        Math.min(100, Math.round(result.arguments.truthScore.compensationFairness)),
+      ),
+    },
+    topRisks: result.arguments.topRisks.slice(0, 3),
+    topGreens: result.arguments.topGreens.slice(0, 3),
+  };
+}

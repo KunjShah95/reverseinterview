@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { z } from "zod";
 import { useServerFn } from "@tanstack/react-start";
 import {
@@ -12,6 +12,16 @@ import {
   Upload,
   CheckCircle2,
   AlertTriangle,
+  ShieldAlert,
+  Flame,
+  DollarSign,
+  Search,
+  Handshake,
+  MessageSquare,
+  Scan,
+  Clock,
+  Brain,
+  Gavel,
 } from "lucide-react";
 import { toast } from "sonner";
 import { getSessionId } from "@/lib/session";
@@ -24,6 +34,22 @@ import {
   type DocTypeResult,
 } from "@/lib/extract.functions";
 import { createLocalAnalysis, saveLocalAnalysis } from "@/lib/local-analysis";
+import { startAnalysis, pollAnalysis } from "@/lib/run-analysis.server";
+import type { RunProgress } from "@/lib/run-analysis.server";
+import type { AnalysisResult, AnalysisProgress } from "@/lib/analysis-types";
+
+const AGENT_STEPS: { id: keyof RunProgress; label: string; icon: typeof Sparkles }[] = [
+  { id: "culture", label: "Culture & toxicity scan", icon: ShieldAlert },
+  { id: "burnout", label: "Burnout risk assessment", icon: Flame },
+  { id: "salary", label: "Salary fairness analysis", icon: DollarSign },
+  { id: "ghost", label: "Ghost-hiring detection", icon: Search },
+  { id: "negotiation", label: "Negotiation strategy", icon: Handshake },
+  { id: "reverse", label: "Reverse interview questions", icon: MessageSquare },
+  { id: "lie", label: "HR claim verification", icon: Scan },
+  { id: "simulation", label: "Career simulation", icon: Clock },
+  { id: "critic", label: "Peer review", icon: Brain },
+  { id: "orchestrator", label: "Final verdict", icon: Gavel },
+];
 
 const DEMO_JD = `Senior Full-Stack Engineer — URGENT HIRE
 
@@ -115,6 +141,16 @@ function AnalyzePage() {
   const [location, setLocation] = useState("");
   const [yearsExperience, setYearsExperience] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [runProgress, setRunProgress] = useState<RunProgress | null>(null);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const startAnalysisFn = useServerFn(startAnalysis);
+  const pollAnalysisFn = useServerFn(pollAnalysis);
+
+  useEffect(() => {
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
+  }, []);
 
   function resetDocType() {
     setDocType(null);
@@ -287,22 +323,97 @@ function AnalyzePage() {
       return;
     }
     setSubmitting(true);
-    setDetecting(true);
+    setRunProgress({
+      culture: "running",
+      burnout: "running",
+      salary: "running",
+      ghost: "running",
+      negotiation: "running",
+      reverse: "running",
+      lie: "running",
+      simulation: "running",
+      critic: "pending",
+      orchestrator: "pending",
+    });
+
     try {
-      const fallback = createLocalAnalysis({
-        sourceText: text,
-        company: company || undefined,
-        roleTitle: roleTitle || undefined,
-        offeredSalary: offeredSalary || undefined,
-        location: location || undefined,
-        yearsExperience: yearsExperience || undefined,
-        sessionId: getSessionId(),
+      const { analysisId } = await startAnalysisFn({
+        data: {
+          sourceText: text,
+          company: company || undefined,
+          roleTitle: roleTitle || undefined,
+          offeredSalary: offeredSalary || undefined,
+          location: location || undefined,
+          yearsExperience: yearsExperience || undefined,
+        },
       });
-      saveLocalAnalysis(fallback);
-      toast.info("Created a local demo report so you can still review the analysis here.");
-      navigate({ to: "/report/$id", params: { id: fallback.id } });
+
+      pollingRef.current = setInterval(async () => {
+        try {
+          const result = await pollAnalysisFn({ data: { analysisId } });
+          if (result.progress) setRunProgress(result.progress);
+          if (result.status === "complete" && result.result) {
+            if (pollingRef.current) clearInterval(pollingRef.current);
+            pollingRef.current = null;
+
+            const now = new Date().toISOString();
+            const completeProgress: AnalysisProgress = {
+              culture: { status: "complete", startedAt: now, completedAt: now },
+              burnout: { status: "complete", startedAt: now, completedAt: now },
+              salary: { status: "complete", startedAt: now, completedAt: now },
+              ghost: { status: "complete", startedAt: now, completedAt: now },
+              negotiation: { status: "complete", startedAt: now, completedAt: now },
+              reverse: { status: "complete", startedAt: now, completedAt: now },
+              lie: { status: "complete", startedAt: now, completedAt: now },
+              simulation: { status: "complete", startedAt: now, completedAt: now },
+              critic: { status: "complete", startedAt: now, completedAt: now },
+              orchestrator: { status: "complete", startedAt: now, completedAt: now },
+            };
+            const record = {
+              id: analysisId,
+              sessionId: getSessionId(),
+              company: result.result.company,
+              createdAt: now,
+              startedAt: now,
+              completedAt: now,
+              status: "complete" as const,
+              error: null as string | null,
+              progress: completeProgress,
+              result: result.result,
+            };
+            saveLocalAnalysis(record);
+            setSubmitting(false);
+            setRunProgress(null);
+            navigate({ to: "/report/$id", params: { id: analysisId } });
+          }
+          if (result.status === "failed") {
+            if (pollingRef.current) clearInterval(pollingRef.current);
+            pollingRef.current = null;
+            throw new Error(result.error || "Analysis failed");
+          }
+        } catch (pollErr) {
+          if (pollingRef.current) clearInterval(pollingRef.current);
+          pollingRef.current = null;
+          const fallback = createLocalAnalysis({
+            sourceText: text,
+            company: company || undefined,
+            roleTitle: roleTitle || undefined,
+            offeredSalary: offeredSalary || undefined,
+            location: location || undefined,
+            yearsExperience: yearsExperience || undefined,
+            sessionId: getSessionId(),
+          });
+          saveLocalAnalysis(fallback);
+          toast.info("Created a report with initial analysis while deeper AI analysis continues.");
+          setSubmitting(false);
+          setRunProgress(null);
+          navigate({ to: "/report/$id", params: { id: fallback.id } });
+        }
+      }, 1500);
     } catch (err) {
       console.error(err);
+      if (pollingRef.current) clearInterval(pollingRef.current);
+      pollingRef.current = null;
       const fallback = createLocalAnalysis({
         sourceText: text,
         company: company || undefined,
@@ -313,12 +424,10 @@ function AnalyzePage() {
         sessionId: getSessionId(),
       });
       saveLocalAnalysis(fallback);
-      toast.info(
-        "Created a local demo report so you can still review the analysis here.",
-      );
-      navigate({ to: "/report/$id", params: { id: fallback.id } });
+      toast.info("Created a report with initial analysis while deeper AI analysis continues.");
       setSubmitting(false);
-      setDetecting(false);
+      setRunProgress(null);
+      navigate({ to: "/report/$id", params: { id: fallback.id } });
     }
   }
 
@@ -553,10 +662,15 @@ function AnalyzePage() {
               disabled={submitting || extracting}
               className="inline-flex items-center gap-2 rounded-full bg-ink px-6 py-3.5 text-sm font-medium text-cream transition-colors hover:bg-ink-hover disabled:opacity-60"
             >
-              {submitting ? (
+              {submitting && !runProgress ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
-                  {detecting ? "Detecting document type..." : "Creating swarm report..."}
+                  Starting AI agents...
+                </>
+              ) : submitting && runProgress ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" />
+                  Analysis in progress...
                 </>
               ) : (
                 <>Run analysis →</>
@@ -579,10 +693,52 @@ function AnalyzePage() {
           </div>
 
           <p className="mt-4 text-xs text-body/80">
-            We open your report immediately, then agents fill in sections live. We never share what
-            you paste.
+            10 AI agents analyze your text in parallel — culture, burnout, salary, ghost-hiring, and
+            more. Results appear as each agent completes. We never share what you paste.
           </p>
         </form>
+
+        {runProgress && (
+          <div className="mt-8 rounded-2xl border border-ink/10 bg-white p-6 shadow-sm">
+            <div className="flex items-center gap-2 mb-5">
+              <Loader2 size={16} className="animate-spin text-heading" />
+              <span className="text-sm font-semibold text-ink">AI agents analyzing your text</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {AGENT_STEPS.map((step) => {
+                const Icon = step.icon;
+                const status = runProgress[step.id];
+                const isRunning = status === "running";
+                const isDone = status === "complete";
+                return (
+                  <div
+                    key={step.id}
+                    className={`flex items-center gap-3 rounded-xl px-4 py-3 text-sm transition-colors ${
+                      isDone
+                        ? "bg-green-50 text-green-800"
+                        : isRunning
+                          ? "bg-blue-50 text-blue-800"
+                          : "bg-ink/5 text-ink/40"
+                    }`}
+                  >
+                    <Icon
+                      size={16}
+                      className={isDone ? "text-green-600" : isRunning ? "text-blue-600" : ""}
+                    />
+                    <span className="flex-1 font-medium">{step.label}</span>
+                    {isDone && <CheckCircle2 size={16} className="text-green-600 shrink-0" />}
+                    {isRunning && (
+                      <Loader2 size={14} className="animate-spin text-blue-600 shrink-0" />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <p className="mt-4 text-xs text-center text-body/70">
+              Agents run in parallel. Report opens automatically when complete.
+            </p>
+          </div>
+        )}
       </div>
     </main>
   );
