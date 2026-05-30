@@ -73,14 +73,15 @@ function LandingPage() {
           className="mt-6 text-ink font-display text-[2.25rem] sm:text-5xl md:text-6xl lg:text-[4.75rem] xl:text-[5.5rem] leading-[0.95] max-w-5xl mx-auto"
           style={{ letterSpacing: "-0.035em" }}
         >
-          Close the rift between offer letters{" "}
+          Don't accept the wrong offer.{" "}
           <span className="italic font-normal" style={{ color: "var(--heading-accent)" }}>
-            and reality.
+            Know the truth before you sign.
           </span>
         </h1>
         <p className="mt-6 max-w-xl mx-auto text-base sm:text-lg text-ink/80 leading-relaxed">
-          Reverse Interview AI reads the job post, the offer, the HR chat — and tells you what
-          working there will actually feel like, before you sign.
+          Reverse Interview AI reads the job post, offer letter, and HR chat — surfacing every red
+          flag, from toxic culture to ghost hiring to unfair pay. Before you accept, know exactly
+          what you're walking into.
         </p>
 
         <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
