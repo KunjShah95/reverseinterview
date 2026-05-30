@@ -1,22 +1,7 @@
 {
   "version": 2,
   "buildCommand": "npm run build",
-  "outputDirectory": "dist",
+  "outputDirectory": "dist/client",
   "framework": null,
-  "routes": [
-    {
-      "source": "^/(?!$)(?!.*\\.).*",
-      "methods": ["GET"],
-      "has": [
-        { "type": "cookie", "name": "__session", "missing": true },
-        { "type": "header", "name": "accept", "value": "text/html" }
-      ],
-      "status": 302,
-      "destination": "/"
-    },
-    {
-      "source": "(/.*)",
-      "destination": "/api/index.js"
-    }
-  ]
+  "rewrites": [{ "source": "/(.*)", "destination": "/api" }]
 }
