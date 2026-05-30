@@ -63,7 +63,6 @@ function LandingPage() {
 
       {/* Hero copy */}
       <section className="relative pt-28 sm:pt-32 md:pt-36 px-4 sm:px-6 md:px-10 max-w-7xl mx-auto text-center">
-       
         <h1
           className="mt-6 text-ink font-display text-[2.25rem] sm:text-5xl md:text-6xl lg:text-[4.75rem] xl:text-[5.5rem] leading-[0.95] max-w-5xl mx-auto"
           style={{ letterSpacing: "-0.035em" }}

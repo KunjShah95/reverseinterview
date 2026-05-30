@@ -43,16 +43,18 @@ export default function SiteNav({ solid = false, hideDashboard = false }: Props)
     };
   }, [menuOpen]);
 
-  const headerBg = scrolled || solid
-    ? "bg-white/80 backdrop-blur-xl border-ink/5 shadow-lg ring-1 ring-black/[0.03]"
-    : "bg-white/40 backdrop-blur-md border-white/40 shadow-sm";
+  const headerBg =
+    scrolled || solid
+      ? "bg-white/80 backdrop-blur-xl border-ink/5 shadow-lg ring-1 ring-black/[0.03]"
+      : "bg-white/40 backdrop-blur-md border-white/40 shadow-sm";
 
   return (
     <>
       <header className="fixed top-4 sm:top-6 left-0 right-0 z-50 px-4">
-        <div className={`mx-auto max-w-6xl rounded-full border transition-all duration-300 ${headerBg}`}>
+        <div
+          className={`mx-auto max-w-6xl rounded-full border transition-all duration-300 ${headerBg}`}
+        >
           <div className="flex items-center justify-between h-14 sm:h-16 px-4 sm:px-6">
-            
             {/* Logo Section */}
             <div className="flex-1 flex items-center min-w-0">
               <Link
@@ -64,7 +66,10 @@ export default function SiteNav({ solid = false, hideDashboard = false }: Props)
                   <Sparkles size={12} className="sm:hidden" />
                   <Sparkles size={14} className="hidden sm:block" />
                 </span>
-                <span className="truncate">ReverseInterview<span className="text-ink/40 text-[9px] sm:text-[10px] align-super">™</span></span>
+                <span className="truncate">
+                  ReverseInterview
+                  <span className="text-ink/40 text-[9px] sm:text-[10px] align-super">™</span>
+                </span>
               </Link>
             </div>
 

@@ -39,7 +39,8 @@ function RegisterPage() {
                 Create your account
               </h1>
               <p className="mt-1 text-sm text-body">
-                Start with the Clerk sign-up flow to save your analysis history and get personalized recommendations.
+                Start with the Clerk sign-up flow to save your analysis history and get personalized
+                recommendations.
               </p>
             </div>
 
