@@ -34,8 +34,8 @@ import {
   type DocTypeResult,
 } from "@/lib/extract.functions";
 import { createLocalAnalysis, saveLocalAnalysis } from "@/lib/local-analysis";
-import { startAnalysis, pollAnalysis } from "@/lib/run-analysis.server";
-import type { RunProgress } from "@/lib/run-analysis.server";
+import { startAnalysis, pollAnalysis } from "@/lib/run-analysis";
+import type { RunProgress } from "@/lib/run-analysis";
 import type { AnalysisResult, AnalysisProgress } from "@/lib/analysis-types";
 
 const AGENT_STEPS: { id: keyof RunProgress; label: string; icon: typeof Sparkles }[] = [
