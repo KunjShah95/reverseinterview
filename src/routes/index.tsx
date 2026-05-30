@@ -22,6 +22,12 @@ import heroImg from "@/assets/hero.jpg";
 import { getSession } from "@/lib/auth-functions";
 
 export const Route = createFileRoute("/")({
+  beforeLoad: async () => {
+    const session = await getSession();
+    if (session.authenticated) {
+      throw redirect({ to: "/dashboard" });
+    }
+  },
   head: () => ({
     meta: [
       {
