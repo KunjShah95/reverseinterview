@@ -1,57 +1,7 @@
-import { clerkMiddleware } from "@clerk/tanstack-react-start/server";
 import { createStart, createMiddleware } from "@tanstack/react-start";
 
 import { renderErrorPage } from "./lib/error-page";
 import { consumeLastCapturedError } from "./lib/error-capture";
-
-// Session cookie name can be overridden with SESSION_COOKIE_NAME env var
-// Clerk dev instances use __clerk_db_jwt instead of __session
-const SESSION_COOKIE_NAMES = [
-  process.env.SESSION_COOKIE_NAME,
-  "__session",
-  "__clerk_db_jwt",
-].filter(Boolean) as string[];
-
-function hasSessionCookie(cookieHeader: string): boolean {
-  if (!cookieHeader) return false;
-  return SESSION_COOKIE_NAMES.some((name) => cookieHeader.includes(`${name}=`));
-}
-
-const sessionRedirectMiddleware = createMiddleware().server(async ({ request, next }) => {
-  try {
-    // Only redirect for top-level GET navigations that accept HTML
-    if (request.method !== "GET") return await next();
-
-    const accept = request.headers.get("accept") || "";
-    if (!accept.includes("text/html")) return await next();
-
-    const url = new URL(request.url);
-    const pathname = url.pathname;
-
-    // Don't redirect the landing page itself, API routes, or static/assets
-    if (
-      pathname === "/" ||
-      pathname.startsWith("/api") ||
-      pathname.startsWith("/assets") ||
-      pathname.startsWith("/public") ||
-      pathname.startsWith("/favicon") ||
-      pathname.startsWith("/_")
-    ) {
-      return await next();
-    }
-
-    const cookieHeader = request.headers.get("cookie") || "";
-    if (!hasSessionCookie(cookieHeader)) {
-      // No session cookie -> send visitor to landing page
-      return Response.redirect(`${url.origin}/`, 302);
-    }
-
-    return await next();
-  } catch (err) {
-    console.error("sessionRedirectMiddleware error:", err);
-    return await next();
-  }
-});
 
 const errorMiddleware = createMiddleware().server(async ({ next }) => {
   try {
@@ -81,5 +31,5 @@ const errorMiddleware = createMiddleware().server(async ({ next }) => {
 });
 
 export const startInstance = createStart(() => ({
-  requestMiddleware: [sessionRedirectMiddleware, clerkMiddleware(), errorMiddleware],
+  requestMiddleware: [errorMiddleware],
 }));

@@ -1,4 +1,5 @@
-import { createFileRoute, Link, redirect } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useEffect } from "react";
 import {
   Play,
   ArrowRight,
@@ -19,15 +20,9 @@ import {
 } from "lucide-react";
 import SiteNav from "@/components/SiteNav";
 import heroImg from "@/assets/hero.jpg";
-import { getSession } from "@/lib/auth-functions";
+import { useFirebaseAuth } from "@/lib/firebase-auth";
 
 export const Route = createFileRoute("/")({
-  beforeLoad: async () => {
-    const session = await getSession();
-    if (session.authenticated) {
-      throw redirect({ to: "/dashboard" });
-    }
-  },
   head: () => ({
     meta: [
       {
@@ -51,6 +46,15 @@ export const Route = createFileRoute("/")({
 });
 
 function LandingPage() {
+  const navigate = useNavigate();
+  const { user, loading } = useFirebaseAuth();
+
+  useEffect(() => {
+    if (!loading && user) {
+      void navigate({ to: "/dashboard" });
+    }
+  }, [loading, navigate, user]);
+
   return (
     <main className="relative w-full min-h-screen bg-cream">
       {/* Hero image background */}
@@ -86,13 +90,13 @@ function LandingPage() {
 
         <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
           <Link
-            to="/sign-in/$"
+            to="/login"
             className="inline-flex shrink-0 items-center gap-2 rounded-full bg-ink px-6 py-3.5 text-sm font-medium text-cream shadow-lg shadow-ink/20 ring-1 ring-cream/20 transition-colors hover:bg-ink-hover"
           >
             Sign in
           </Link>
           <Link
-            to="/sign-up/$"
+            to="/register"
             className="inline-flex shrink-0 items-center gap-2 rounded-full border border-ink/30 bg-cream/80 backdrop-blur-md px-6 py-3.5 text-sm font-medium text-ink transition-colors hover:bg-cream"
           >
             Sign up

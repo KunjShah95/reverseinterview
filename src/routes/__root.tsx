@@ -1,4 +1,3 @@
-import { ClerkProvider } from "@clerk/tanstack-react-start";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   Outlet,
@@ -10,6 +9,8 @@ import {
 } from "@tanstack/react-router";
 import { Toaster } from "@/components/ui/sonner";
 import { getAbsoluteUrl, getSiteUrl } from "@/lib/site-url";
+import "@/lib/firebase";
+import { FirebaseAuthProvider } from "@/lib/firebase-auth";
 
 import appCss from "../styles.css?url";
 
@@ -154,7 +155,7 @@ function RootShell({ children }: { children: React.ReactNode }) {
         />
       </head>
       <body>
-        <ClerkProvider>
+        <FirebaseAuthProvider>
           <a
             href="#main"
             className="skip-link sr-only focus:not-sr-only absolute left-4 top-4 z-50 rounded-sm bg-white px-2 py-1 text-sm"
@@ -163,7 +164,7 @@ function RootShell({ children }: { children: React.ReactNode }) {
           </a>
           {children}
           <Scripts />
-        </ClerkProvider>
+        </FirebaseAuthProvider>
       </body>
     </html>
   );

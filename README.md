@@ -57,3 +57,19 @@ AI provider
   - `DEFAULT_AI_MODEL` (for example `llama-3.3-70b-versatile`, `mistral-large-latest`, or `gemini-2.0-flash`)
 
 The provider abstraction lives in `src/lib/ai-provider.server.ts`.
+
+Firebase
+
+- The app now includes a client-side Firebase bootstrap in `src/lib/firebase.ts`.
+- Google sign-in and password reset are available on the auth pages and in Settings.
+- Saved reports are mirrored into Firebase Realtime Database under the signed-in user's UID and reloaded into local cache on sign-in.
+- Configure the web app settings through these env vars:
+  - `VITE_FIREBASE_API_KEY`
+  - `VITE_FIREBASE_AUTH_DOMAIN`
+  - `VITE_FIREBASE_DATABASE_URL`
+  - `VITE_FIREBASE_PROJECT_ID`
+  - `VITE_FIREBASE_STORAGE_BUCKET`
+  - `VITE_FIREBASE_MESSAGING_SENDER_ID`
+  - `VITE_FIREBASE_APP_ID`
+  - `VITE_FIREBASE_MEASUREMENT_ID` (optional, used for Analytics)
+- The Firebase module is loaded from the app root so browser-only Analytics initialization stays SSR-safe.

@@ -10,12 +10,14 @@ import {
   ArrowRight,
   Download,
   Loader2,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import SiteNav from "@/components/SiteNav";
 import SiteFooter from "@/components/SiteFooter";
 import DashboardSidebar from "@/components/DashboardSidebar";
 import { getLocalAnalysis, type LocalAnalysisRecord } from "@/lib/local-analysis";
+import { useFirebaseAuth } from "@/lib/firebase-auth";
 import { getAbsoluteUrl } from "@/lib/site-url";
 import type {
   AgentId,
@@ -39,6 +41,343 @@ const AGENT_LABELS: { id: AgentId; label: string }[] = [
 ];
 
 const ACTIVE_STATUSES: AnalysisStatus[] = ["queued", "running"];
+
+// jsPDF's bundled Helvetica font only supports WinAnsi (cp1252). Replace common
+// Unicode characters with ASCII equivalents so the cover page and page header
+// never render as empty boxes / question marks.
+function sanitizeForDefaultFont(text: string): string {
+  return text
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+    .replace(/\u2013|\u2014/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/\u00A0/g, " ")
+    // Any non-Latin-1 character (above U+00FF) - replace with "?" since
+    // jsPDF's default Helvetica only supports WinAnsi/cp1252.
+    .replace(/[^\u0020-\u00FF]/g, "?");
+}
+
+// Tailwind v4 emits colors as `oklab(...)` / `oklch(...)`, and html2canvas
+// 1.4.1's color parser throws "Attempting to parse an unsupported color
+// function" on those. Browsers that can read the value can also resolve it
+// via a 2D canvas (the canvas normalises the fillStyle back to rgba/hex),
+// so we round-trip every modern CSS color through the canvas before handing
+// the cloned document to html2canvas.
+const MODERN_COLOR_RE = /(oklab|oklch|color\()\s*\(/i;
+
+function resolveModernColor(value: string): string {
+  if (typeof value !== "string" || !MODERN_COLOR_RE.test(value)) return value;
+  if (typeof document === "undefined") return value;
+  let ctx: CanvasRenderingContext2D | null = null;
+  try {
+    ctx = document.createElement("canvas").getContext("2d");
+  } catch {
+    return value;
+  }
+  if (!ctx) return value;
+  try {
+    // Reset to a known value first so the canvas isn't holding an old
+    // fillStyle that already short-circuited the assignment.
+    ctx.fillStyle = "rgb(0, 0, 0)";
+    ctx.fillStyle = value;
+    return ctx.fillStyle as string;
+  } catch {
+    return value;
+  }
+}
+
+async function waitForPdfLayout(): Promise<boolean> {
+  if (typeof document !== "undefined" && "fonts" in document) {
+    try {
+      await (document as Document & { fonts?: FontFaceSet }).fonts?.ready;
+    } catch {
+      // Some browsers expose `fonts` but reject ready; fall through.
+    }
+  }
+  // Multiple frames lets React effects, image decodes, and reflows settle.
+  await new Promise((resolve) => window.requestAnimationFrame(() => resolve(null)));
+  await new Promise((resolve) => window.requestAnimationFrame(() => resolve(null)));
+
+  if (typeof document !== "undefined") {
+    const images = Array.from(document.images).filter(
+      (img) => !img.complete || img.naturalWidth === 0,
+    );
+    if (images.length > 0) {
+      await Promise.all(
+        images.map(
+          (img) =>
+            new Promise<void>((resolve) => {
+              const done = () => resolve();
+              img.addEventListener("load", done, { once: true });
+              img.addEventListener("error", done, { once: true });
+              // Safety timeout: don't block the export forever on a stalled image.
+              window.setTimeout(done, 2000);
+            }),
+        ),
+      );
+    }
+  }
+  return true;
+}
+
+async function captureSectionCanvas(el: HTMLElement): Promise<HTMLCanvasElement> {
+  // Pre-flight: bail out before we hand html2canvas a section so tall that
+  // the resulting bitmap would exceed the browser's max canvas dimension
+  // (Chrome: 16384, Firefox: 32767, Safari: 4096-8192 depending on iOS / macOS).
+  const rect = el.getBoundingClientRect();
+  const projectedHeightPx = Math.ceil(rect.height * 2);
+  const projectedWidthPx = Math.ceil(rect.width * 2);
+  const MAX_DIM = 16000;
+  if (projectedHeightPx > MAX_DIM || projectedWidthPx > MAX_DIM) {
+    throw new Error(
+      `Section "${el.dataset.section ?? "(unnamed)"}" is too large to render in one pass ` +
+        `(${projectedWidthPx}x${projectedHeightPx}px). Try reducing its size.`,
+    );
+  }
+
+  const baseOptions = {
+    backgroundColor: "#ffffff",
+    scale: 2,
+    useCORS: true,
+    allowTaint: false,
+    logging: false,
+    removeContainer: true,
+    onclone: (clonedDoc: Document, clonedEl: HTMLElement) => {
+      // Strip fixed/sticky positioning which can throw off html2canvas and
+      // tends to render as duplicates of nav bars or sidebars in the PDF.
+      // Also normalise every modern CSS color (oklab/oklch/color()) on the
+      // element and any stylesheet rule, because html2canvas 1.4.1 throws
+      // "Attempting to parse an unsupported color function" on those.
+      const COLOR_PROPS: (keyof CSSStyleDeclaration)[] = [
+        "color",
+        "backgroundColor",
+        "borderTopColor",
+        "borderRightColor",
+        "borderBottomColor",
+        "borderLeftColor",
+        "outlineColor",
+        "fill",
+        "stroke",
+        "textDecorationColor",
+        "columnRuleColor",
+        "caretColor",
+      ];
+      clonedEl.querySelectorAll<HTMLElement>("*").forEach((node) => {
+        const computed = clonedDoc.defaultView?.getComputedStyle(node);
+        if (computed && (computed.position === "fixed" || computed.position === "sticky")) {
+          node.style.position = "static";
+        }
+        if (!computed) return;
+        for (const prop of COLOR_PROPS) {
+          const value = computed[prop];
+          if (typeof value === "string" && MODERN_COLOR_RE.test(value)) {
+            const resolved = resolveModernColor(value);
+            if (resolved && resolved !== value) {
+              (node.style as unknown as Record<string, string>)[prop as string] = resolved;
+            }
+          }
+        }
+        // Gradients (backgroundImage, borderImage, maskImage, listStyleImage)
+        // can embed oklab() in their color stops. We can't easily resolve
+        // those, but we *can* resolve each oklab() inside the string by
+        // building an equivalent gradient on a scratch element and asking
+        // the browser what the computed color actually is.
+        for (const imgProp of ["backgroundImage", "borderImageSource", "maskImage", "listStyleImage"] as const) {
+          const value = computed[imgProp];
+          if (typeof value === "string" && MODERN_COLOR_RE.test(value)) {
+            const resolved = resolveModernColor(value);
+            if (resolved && resolved !== value) {
+              node.style[imgProp] = resolved;
+            }
+          }
+        }
+        // html2canvas 1.4 doesn't paint fully transparent text. Compare the
+        // alpha channel numerically rather than the (browser-dependent)
+        // string form so Safari/Firefox/Chrome all behave the same.
+        const colorMatch = computed.color.match(
+          /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/,
+        );
+        if (colorMatch && (!colorMatch[4] || parseFloat(colorMatch[4]) === 0)) {
+          node.style.color = "#1f2937";
+        }
+      });
+
+      // Walk the cloned stylesheets and rewrite any rule whose value still
+      // contains a modern color function. We can only mutate same-origin
+      // sheets; cross-origin ones throw on cssRules access and are skipped.
+      for (const sheet of Array.from(clonedDoc.styleSheets)) {
+        let rules: CSSRuleList | null = null;
+        try {
+          rules = sheet.cssRules;
+        } catch {
+          continue;
+        }
+        if (!rules) continue;
+        for (const rule of Array.from(rules)) {
+          if (!(rule instanceof CSSStyleRule)) continue;
+          const style = rule.style;
+          for (let i = 0; i < style.length; i++) {
+            const prop = style.item(i);
+            const value = style.getPropertyValue(prop);
+            if (!value || !MODERN_COLOR_RE.test(value)) continue;
+            const resolved = resolveModernColor(value);
+            if (resolved && resolved !== value) {
+              style.setProperty(prop, resolved);
+            }
+          }
+        }
+      }
+    },
+  } as const;
+
+  // First try the standard, taint-free path. Only fall back to
+  // foreignObjectRendering if the regular render fails - it serialises the
+  // DOM as SVG <foreignObject> which taints the canvas whenever the page has
+  // any image without CORS headers, breaking the subsequent toDataURL call.
+  try {
+    return await html2canvas(el, { ...baseOptions, foreignObjectRendering: false });
+  } catch (firstErr) {
+    console.warn(
+      "html2canvas failed with default options, retrying with foreignObjectRendering",
+      firstErr,
+    );
+    return await html2canvas(el, { ...baseOptions, foreignObjectRendering: true });
+  }
+}
+
+function addCanvasToPdf(
+  pdf: jsPDF,
+  canvas: HTMLCanvasElement,
+  layout: { contentW: number; contentH: number; marginX: number; marginY: number },
+): number {
+  const { contentW, contentH, marginX, marginY } = layout;
+  const ptPerPx = contentW / canvas.width;
+  const totalHeightPt = canvas.height * ptPerPx;
+
+  if (totalHeightPt <= contentH) {
+    const imgW = contentW;
+    const imgH = canvas.height * ptPerPx;
+    const imgData = canvas.toDataURL("image/jpeg", 0.92);
+    pdf.addPage();
+    pdf.addImage(imgData, "JPEG", marginX, marginY, imgW, imgH);
+    return 1;
+  }
+
+  // Multi-page section: slice vertically. Use a small overlap so a glyph that
+  // straddles a slice boundary appears in full on at least one page instead of
+  // being cut at a pixel boundary.
+  const overlapPx = 12;
+  const baseSlicePx = Math.max(1, Math.floor(contentH / ptPerPx) - overlapPx);
+  const numPages = Math.max(1, Math.ceil(canvas.height / baseSlicePx));
+  let pagesAdded = 0;
+
+  for (let p = 0; p < numPages; p++) {
+    const sy = Math.max(0, p * baseSlicePx - (p > 0 ? overlapPx : 0));
+    const sh = Math.min(baseSlicePx + (p > 0 ? overlapPx : 0), canvas.height - sy);
+    if (sh <= 0) continue;
+
+    const sliceCanvas = document.createElement("canvas");
+    sliceCanvas.width = canvas.width;
+    sliceCanvas.height = sh;
+    const ctx = sliceCanvas.getContext("2d");
+    if (!ctx) {
+      console.warn("Could not get 2d context for canvas slice");
+      continue;
+    }
+    ctx.drawImage(canvas, 0, sy, canvas.width, sh, 0, 0, canvas.width, sh);
+
+    let imgData: string;
+    try {
+      imgData = sliceCanvas.toDataURL("image/jpeg", 0.92);
+    } catch (dataErr) {
+      console.warn("toDataURL failed on slice canvas, skipping page", dataErr);
+      continue;
+    } finally {
+      // Free the slice canvas immediately.
+      sliceCanvas.width = 0;
+      sliceCanvas.height = 0;
+    }
+
+    const imgW = contentW;
+    const imgH = contentW * sh / canvas.width;
+    pdf.addPage();
+    pdf.addImage(imgData, "JPEG", marginX, marginY, imgW, imgH);
+    pagesAdded++;
+  }
+
+  return pagesAdded;
+}
+
+function addSectionErrorPage(
+  pdf: jsPDF,
+  sectionName: string,
+  err: unknown,
+  marginX: number,
+  marginY: number,
+  contentW: number,
+): number {
+  const message = err instanceof Error ? err.message : String(err ?? "Unknown error");
+  pdf.addPage();
+  pdf.setFontSize(12);
+  pdf.setTextColor(180, 60, 60);
+  pdf.text(`Section "${sanitizeForDefaultFont(sectionName)}" could not be rendered.`, marginX, marginY);
+  pdf.setFontSize(10);
+  pdf.setTextColor(110, 110, 110);
+  const wrapped = pdf.splitTextToSize(sanitizeForDefaultFont(message), contentW);
+  pdf.text(wrapped, marginX, marginY + 18);
+  return 1;
+}
+
+function addHeadersAndFooters(
+  pdf: jsPDF,
+  layout: {
+    headerText: string;
+    contentPageCount: number;
+    pageW: number;
+    pageH: number;
+    marginX: number;
+  },
+) {
+  if (layout.contentPageCount <= 0) return;
+  for (let i = 2; i <= layout.contentPageCount + 1; i++) {
+    pdf.setPage(i);
+    pdf.setFontSize(9);
+    pdf.setTextColor(160, 160, 160);
+    pdf.text(layout.headerText, layout.marginX, 22, { align: "left" });
+    pdf.text(
+      `Page ${i - 1} of ${layout.contentPageCount}`,
+      layout.pageW / 2,
+      layout.pageH - 16,
+      { align: "center" },
+    );
+  }
+}
+
+function handlePdfExportError(err: unknown) {
+  const errorMessage = err instanceof Error ? err.message : String(err ?? "Unknown error");
+  const errName = err instanceof Error ? err.name : "";
+  const isTaintError =
+    /taint|cross-origin|securityerror|domexception/i.test(errorMessage) ||
+    (errName && /(SecurityError|DOMException)/i.test(errName));
+
+  if (isTaintError) {
+    toast.error(
+      "PDF export hit a CORS/security issue. Opening your browser's Print dialog instead - save as PDF there.",
+    );
+  } else if (/timeout|out of memory|maximum canvas/i.test(errorMessage)) {
+    toast.error(
+      "PDF export failed: the report is too large to render in memory. Use your browser's Print dialog to save as PDF instead.",
+    );
+  } else {
+    toast.error(`PDF export: ${errorMessage}. Opening Print dialog as fallback.`);
+  }
+
+  try {
+    window.print();
+  } catch (printErr) {
+    console.error("Print fallback failed:", printErr);
+  }
+}
 
 export const Route = createFileRoute("/report/$id")({
   loader: ({ params }) => {
@@ -101,13 +440,42 @@ function ReportPage() {
   const reportRef = useRef<HTMLDivElement>(null);
   const [downloading, setDownloading] = useState(false);
   const [localData, setLocalData] = useState<LocalAnalysisRecord | null>(null);
+  const { user, loading } = useFirebaseAuth();
+  // A monotonically increasing token; bumped on every new PDF export (and on
+  // unmount). Long-running captures check the token before each await so a
+  // superseded or unmounted export stops touching the PDF/state.
+  const generationRef = useRef(0);
 
   useEffect(() => {
-    setLocalData(getLocalAnalysis(id));
-  }, [id]);
+    if (loading) return;
+    // First try localStorage (works for all users)
+    const local = getLocalAnalysis(id);
+    if (local) {
+      setLocalData(local);
+      return;
+    }
+    // If not in localStorage and user is authenticated, try Firestore
+    if (user) {
+      import("@/lib/firestore")
+        .then(({ getUserReport }) => getUserReport(user.uid, id))
+        .then((firestoreRecord) => {
+          if (firestoreRecord) setLocalData(firestoreRecord);
+        })
+        .catch((err) => console.error("Failed to load from Firestore:", err));
+    }
+  }, [id, loading, user]);
+
+  // Cancel any in-flight PDF generation when the component unmounts so we
+  // don't call setDownloading(false) on a dead component or write a PDF after
+  // the user has navigated away.
+  useEffect(() => {
+    return () => {
+      generationRef.current = -1;
+    };
+  }, []);
 
   const currentData = localData;
-  const currentLoading = localData === null;
+  const currentLoading = loading || localData === null;
   const currentError = localData ? null : new Error("Analysis not found");
   const reportStatus = currentData?.status;
   const reportError = currentData?.error ?? null;
@@ -140,137 +508,234 @@ function ReportPage() {
 
   async function downloadPdf() {
     if (!reportRef.current) return;
+    // Bump the generation token so any earlier in-flight export stops touching
+    // state. We re-read this on every await below.
+    const myGeneration = ++generationRef.current;
+    const isCurrent = () => generationRef.current === myGeneration;
+
     setDownloading(true);
     try {
-      const node = reportRef.current;
-      if (typeof document !== "undefined" && "fonts" in document) {
-        await (document as Document & { fonts?: FontFaceSet }).fonts?.ready;
+      const container = reportRef.current;
+
+      if (!(await waitForPdfLayout()) || !isCurrent()) return;
+
+      const sectionEls = Array.from(
+        container.querySelectorAll<HTMLElement>("[data-section]"),
+      );
+      if (sectionEls.length === 0) {
+        throw new Error("No report sections found - cannot generate PDF.");
       }
-      await new Promise((resolve) => window.requestAnimationFrame(() => resolve(null)));
-      let canvas = await html2canvas(node, {
-        backgroundColor: "#f5f1e8",
-        scale: 2,
-        useCORS: true,
-        foreignObjectRendering: true,
-        windowWidth: Math.min(node.scrollWidth, 1200),
-      });
-      if (canvas.width === 0 || canvas.height === 0) {
-        console.warn("foreignObjectRendering returned empty canvas, retrying without it");
-        canvas = await html2canvas(node, {
-          backgroundColor: "#f5f1e8",
-          scale: 2,
-          useCORS: true,
-          windowWidth: Math.min(node.scrollWidth, 1200),
-        });
-      }
-      const imgData = canvas.toDataURL("image/jpeg", 0.92);
+
       const pdf = new jsPDF({ unit: "pt", format: "a4", orientation: "portrait" });
       const pageW = pdf.internal.pageSize.getWidth();
       const pageH = pdf.internal.pageSize.getHeight();
-      const imgW = pageW;
-      const imgH = (canvas.height * imgW) / canvas.width;
+      const marginX = 40;
+      const marginY = 50;
+      const contentW = pageW - marginX * 2;
+      const contentH = pageH - marginY * 2;
 
-      let position = 0;
-      let heightLeft = imgH;
-      pdf.addImage(imgData, "JPEG", 0, position, imgW, imgH);
-      heightLeft -= pageH;
-      while (heightLeft > 0) {
-        position -= pageH;
-        pdf.addPage();
-        pdf.addImage(imgData, "JPEG", 0, position, imgW, imgH);
-        heightLeft -= pageH;
+      const headerParts = [r.roleTitle, r.company].filter(Boolean) as string[];
+      const rawHeaderText = headerParts.length
+        ? headerParts.join(" · ")
+        : "Analysis Report";
+      const headerText = sanitizeForDefaultFont(rawHeaderText);
+      const safeCompany = (
+        (r.company || "report")
+          .replace(/[^a-z0-9-]+/gi, "-")
+          .replace(/^-+|-+$/g, "")
+          .toLowerCase()
+          .slice(0, 40) || "report"
+      );
+      const reportDate = sanitizeForDefaultFont(
+        new Date().toLocaleDateString(undefined, {
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+        }),
+      );
+
+      // Cover page
+      pdf.setFontSize(26);
+      pdf.setTextColor(30, 30, 30);
+      pdf.text(headerText, pageW / 2, pageH / 2 - 70, { align: "center" });
+
+      pdf.setFontSize(12);
+      pdf.setTextColor(100, 100, 100);
+      pdf.text("Reverse Interview AI", pageW / 2, pageH / 2 - 30, { align: "center" });
+      pdf.text("Analysis Report", pageW / 2, pageH / 2 - 12, { align: "center" });
+
+      pdf.setFontSize(10);
+      pdf.setTextColor(140, 140, 140);
+      pdf.text(reportDate, pageW / 2, pageH / 2 + 12, { align: "center" });
+
+      if (r.orchestrator) {
+        const recBadge =
+          r.orchestrator.recommendation === "proceed"
+            ? "Proceed"
+            : r.orchestrator.recommendation === "caution"
+              ? "Proceed with caution"
+              : "Avoid";
+        pdf.setFontSize(11);
+        pdf.setTextColor(60, 60, 60);
+        pdf.text(`Verdict: ${recBadge}`, pageW / 2, pageH / 2 + 40, {
+          align: "center",
+        });
       }
-      const safeCompany = (r.company || "report")
-        .replace(/[^a-z0-9-]+/gi, "-")
-        .replace(/^-+|-+$/g, "")
-        .toLowerCase()
-        .slice(0, 40);
-      pdf.save(`reverse-interview-${safeCompany || "report"}.pdf`);
-    } catch (err) {
-      // Surface richer error info for debugging and provide helpful guidance to users.
-      console.error("PDF export error:", err);
-      const message = (err && (err as any).message) || String(err || "Unknown error");
 
-      // Detect common canvas taint/security errors (cross-origin images) and offer a fallback.
-      const isTaintError =
-        /taint|cross-origin|securityerror|domexception/i.test(message) ||
-        (err && (err as any).name && /(SecurityError|DOMException)/i.test((err as any).name));
+      let pageCount = 1;
+      let hadSectionError = false;
 
-      if (isTaintError) {
-        toast.error(
-          "PDF export failed due to cross-origin images (CORS) or a tainted canvas. Try using your browser's Print → Save as PDF or remove third-party images.",
-        );
-        // Offer a graceful fallback — open the print dialog so user can Save as PDF.
+      for (let i = 0; i < sectionEls.length; i++) {
+        if (!isCurrent()) return;
+        const el = sectionEls[i];
+        const sectionName = el.dataset.section || `Section ${i + 1}`;
+
         try {
-          window.print();
-        } catch (printErr) {
-          console.error("Print fallback failed:", printErr);
+          const canvas = await captureSectionCanvas(el);
+          if (!isCurrent()) return;
+
+          if (canvas.width === 0 || canvas.height === 0) {
+            console.warn(`Section "${sectionName}" rendered empty canvas, skipping`);
+            continue;
+          }
+
+          pageCount += addCanvasToPdf(pdf, canvas, {
+            contentW,
+            contentH,
+            marginX,
+            marginY,
+          });
+        } catch (sectionErr) {
+          hadSectionError = true;
+          console.error(`Section "${sectionName}" failed to capture:`, sectionErr);
+          pageCount += addSectionErrorPage(
+            pdf,
+            sectionName,
+            sectionErr,
+            marginX,
+            marginY,
+            contentW,
+          );
         }
-      } else {
-        // Generic error: show message and suggest print fallback.
-        toast.error(`PDF export failed: ${message}. Try your browser's Print → Save as PDF.`);
       }
+
+      if (!isCurrent()) return;
+
+      addHeadersAndFooters(pdf, {
+        headerText,
+        contentPageCount: pageCount - 1,
+        pageW,
+        pageH,
+        marginX,
+      });
+
+      pdf.save(`reverse-interview-${safeCompany}.pdf`);
+
+      if (hadSectionError) {
+        toast.warning(
+          "PDF generated, but one or more sections could not be captured. Check the file for placeholder pages.",
+        );
+      }
+    } catch (err) {
+      if (!isCurrent()) return;
+      console.error("PDF export error:", err);
+      handlePdfExportError(err);
     } finally {
-      setDownloading(false);
+      if (isCurrent()) setDownloading(false);
     }
   }
 
+  function cancelDownload() {
+    // Invalidate the current generation; any in-flight capture will see the
+    // token mismatch and bail out at the next await.
+    generationRef.current = -1;
+    setDownloading(false);
+    toast.info("PDF export cancelled.");
+  }
+
   return (
-    <main className="min-h-screen bg-paper lg:pl-72">
-      <DashboardSidebar />
-      <div className="lg:hidden">
-        <SiteNav solid />
+    <main className="min-h-screen bg-paper lg:pl-72 print:bg-white print:pl-0 print:text-black">
+      <div className="print:hidden">
+        <DashboardSidebar />
+        <div className="lg:hidden">
+          <SiteNav solid />
+        </div>
       </div>
-      <div ref={reportRef}>
-        <VerdictHero r={r} status={reportStatus ?? "failed"} error={reportError} />
-        <div className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pb-20 space-y-8">
-          <AgentProgressPanel progress={progress} status={reportStatus ?? "failed"} />
+      <div ref={reportRef} className="print:max-w-none">
+        <div data-section="verdict" className="print:break-inside-avoid">
+          <VerdictHero r={r} status={reportStatus ?? "failed"} error={reportError} />
+        </div>
+        <div className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pb-20 space-y-8 print:max-w-none print:px-2 print:space-y-4">
+          <div data-section="progress" className="print:break-inside-avoid">
+            <AgentProgressPanel progress={progress} status={reportStatus ?? "failed"} />
+          </div>
           {reportStatus === "partial" && (
             <StatusBanner text="This report is partial. Some agents failed or returned incomplete output, so the final verdict uses only available evidence." />
           )}
           {reportStatus === "failed" && (
             <StatusBanner text={reportError || "The swarm could not complete this analysis."} />
           )}
-          <TruthScoreCard r={r} progress={progress} />
-          <div className="grid gap-6 lg:grid-cols-2">
+          <div data-section="truth-score" className="print:break-inside-avoid">
+            <TruthScoreCard r={r} progress={progress} />
+          </div>
+          <div data-section="culture-burnout" className="grid gap-6 lg:grid-cols-2 print:break-inside-avoid">
             <ToxicityCard r={r} progress={progress} />
             <BurnoutGhostCard r={r} progress={progress} />
           </div>
-          <SalaryCard r={r} progress={progress} />
-          <LieDetectorCard r={r} progress={progress} />
-          <ReverseQuestionsCard r={r} progress={progress} />
-          <SimulationCard r={r} progress={progress} />
-          <NegotiationCard r={r} progress={progress} />
-          <p className="text-xs text-body/70 text-center pt-6">
-            Signals are interpretive, not factual claims. Always do your own research before
-            accepting an offer.
-          </p>
+          <div data-section="salary" className="print:break-inside-avoid">
+            <SalaryCard r={r} progress={progress} />
+          </div>
+          <div data-section="lie-detector" className="print:break-inside-avoid">
+            <LieDetectorCard r={r} progress={progress} />
+          </div>
+          <div data-section="reverse-questions" className="print:break-inside-avoid">
+            <ReverseQuestionsCard r={r} progress={progress} />
+          </div>
+          <div data-section="simulation" className="print:break-inside-avoid">
+            <SimulationCard r={r} progress={progress} />
+          </div>
+          <div data-section="negotiation" className="print:break-inside-avoid">
+            <NegotiationCard r={r} progress={progress} />
+          </div>
+          <div data-section="disclaimer">
+            <p className="text-xs text-body/70 text-center pt-6">
+              Signals are interpretive, not factual claims. Always do your own research before
+              accepting an offer.
+            </p>
+          </div>
         </div>
       </div>
-      <div className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pb-10 flex flex-wrap items-center justify-center gap-3">
-        <button
-          onClick={downloadPdf}
-          disabled={downloading}
-          className="inline-flex items-center gap-2 rounded-full border border-ink/15 bg-white px-5 py-2.5 text-sm font-medium text-ink hover:bg-cream transition-colors disabled:opacity-60"
-        >
-          {downloading ? (
-            <>
-              <Loader2 size={14} className="animate-spin" /> Building PDF…
-            </>
-          ) : (
-            <>
-              <Download size={14} /> Download as PDF
-            </>
-          )}
-        </button>
-        <Link
-          to="/analyze"
-          className="inline-flex items-center gap-2 rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-cream hover:bg-ink-hover transition-colors"
-        >
-          Analyze another job <ArrowRight size={14} />
-        </Link>
+      <div className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pb-10 flex flex-wrap items-center justify-center gap-3 print:hidden">
+        {downloading ? (
+          <button
+            onClick={cancelDownload}
+            className="inline-flex items-center gap-2 rounded-full border border-ink/15 bg-white px-5 py-2.5 text-sm font-medium text-ink hover:bg-cream transition-colors"
+            type="button"
+          >
+            <X size={14} /> Cancel
+          </button>
+        ) : (
+          <button
+            onClick={downloadPdf}
+            disabled={downloading}
+            className="inline-flex items-center gap-2 rounded-full border border-ink/15 bg-white px-5 py-2.5 text-sm font-medium text-ink hover:bg-cream transition-colors disabled:opacity-60"
+            type="button"
+          >
+            <Download size={14} /> Download as PDF
+          </button>
+        )}
+        {!downloading && (
+          <Link
+            to="/analyze"
+            className="inline-flex items-center gap-2 rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-cream hover:bg-ink-hover transition-colors"
+          >
+            Analyze another job <ArrowRight size={14} />
+          </Link>
+        )}
       </div>
-      <SiteFooter />
+      <div className="print:hidden">
+        <SiteFooter />
+      </div>
     </main>
   );
 }

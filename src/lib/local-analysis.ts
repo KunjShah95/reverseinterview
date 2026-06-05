@@ -386,10 +386,24 @@ export function createLocalAnalysis(input: LocalAnalysisInput): LocalAnalysisRec
   };
 }
 
-export function saveLocalAnalysis(record: LocalAnalysisRecord) {
+export function saveLocalAnalysis(record: LocalAnalysisRecord, uid?: string) {
+  // Always save to localStorage
   const records = readAnalyses();
   const next = [record, ...records.filter((existing) => existing.id !== record.id)];
   writeAnalyses(next);
+
+  // Also persist to Firestore when user is authenticated (non-blocking)
+  if (uid) {
+    import("./firestore")
+      .then(({ saveReportToFirestore }) => {
+        saveReportToFirestore(uid, record).catch((err) => {
+          console.error("Failed to save report to Firestore:", err);
+        });
+      })
+      .catch((err) => {
+        console.error("Failed to load firestore module:", err);
+      });
+  }
 }
 
 export function getLocalAnalysis(id: string) {
@@ -412,8 +426,25 @@ export function listLocalAnalysisRecords(sessionId: string) {
   return readAnalyses().filter((record) => record.sessionId === sessionId);
 }
 
+// Returns every locally-saved analysis, regardless of which session it was
+// tagged with. We use this on the history/dashboard pages so users still see
+// analyses they ran before logging in (those were saved under the anonymous
+// device UUID, which differs from the firebase UID once they sign in).
+export function listAllLocalAnalysisRecords() {
+  return readAnalyses();
+}
+
 export function getLocalDashboardStats(sessionId: string) {
   const records = readAnalyses().filter((record) => record.sessionId === sessionId);
+  return computeStats(records);
+}
+
+// Session-agnostic version of the above. Counts every analysis in localStorage.
+export function getAllLocalDashboardStats() {
+  return computeStats(readAnalyses());
+}
+
+function computeStats(records: LocalAnalysisRecord[]) {
   let proceed = 0;
   let caution = 0;
   let avoid = 0;
@@ -438,4 +469,27 @@ export function getLocalDashboardStats(sessionId: string) {
     avoid,
     running,
   };
+}
+
+// Re-tag every locally-saved analysis that was written under a different
+// session (e.g. an anonymous device UUID) so it shows up under the active
+// session ID going forward. Pass `previousSessionId = "any"` to re-tag
+// every record that isn't already tagged with `nextSessionId`.
+// Returns the number of records that were re-tagged.
+export function reTagLocalAnalyses(previousSessionId: string, nextSessionId: string) {
+  if (!nextSessionId) return 0;
+  const records = readAnalyses();
+  let changed = 0;
+  const next = records.map((record) => {
+    const matches = previousSessionId === "any"
+      ? record.sessionId !== nextSessionId
+      : record.sessionId === previousSessionId;
+    if (matches) {
+      changed++;
+      return { ...record, sessionId: nextSessionId };
+    }
+    return record;
+  });
+  if (changed > 0) writeAnalyses(next);
+  return changed;
 }

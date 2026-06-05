@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { Show, UserButton } from "@clerk/tanstack-react-start";
 import { Menu, X, Sparkles } from "lucide-react";
+import { useFirebaseAuth } from "@/lib/firebase-auth";
 
 type NavLink = { to: string; label: string };
 
@@ -23,6 +23,7 @@ type Props = {
 export default function SiteNav({ solid = false, hideDashboard = false }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const { user, signOut } = useFirebaseAuth();
 
   useEffect(() => {
     const handleScroll = () => {
@@ -85,40 +86,54 @@ export default function SiteNav({ solid = false, hideDashboard = false }: Props)
                   {link.label}
                 </Link>
               ))}
-              {!hideDashboard && (
-                <Show when="signed-in">
-                  <Link
-                    to="/dashboard"
-                    className="px-3 py-1.5 text-sm font-medium text-ink/70 hover:text-ink transition-colors"
-                  >
-                    Dashboard
-                  </Link>
-                </Show>
+              {!hideDashboard && user && (
+                <Link
+                  to="/dashboard"
+                  className="px-3 py-1.5 text-sm font-medium text-ink/70 hover:text-ink transition-colors"
+                >
+                  Dashboard
+                </Link>
               )}
             </nav>
 
             {/* Auth & Menu Section */}
             <div className="flex-1 flex items-center justify-end gap-2 sm:gap-3">
               <div className="hidden lg:flex items-center gap-3">
-                <Show when="signed-in">
-                  <div className="flex items-center gap-3 pr-2 border-r border-ink/10">
-                    <UserButton />
-                  </div>
-                </Show>
-                <Show when="signed-out">
-                  <Link
-                    to="/sign-in/$"
-                    className="text-sm font-medium text-ink/70 hover:text-ink transition-colors"
-                  >
-                    Sign in
-                  </Link>
-                  <Link
-                    to="/sign-up/$"
-                    className="inline-flex items-center justify-center rounded-full bg-ink px-4 py-2 text-sm font-medium text-cream shadow-sm transition-colors hover:bg-ink-hover"
-                  >
-                    Get started
-                  </Link>
-                </Show>
+                {user ? (
+                  <>
+                    <div className="flex items-center gap-3 pr-2 border-r border-ink/10">
+                      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-ink text-xs font-semibold text-cream">
+                        {(user.displayName ?? user.email ?? "U").slice(0, 2).toUpperCase()}
+                      </div>
+                      <div className="text-left">
+                        <p className="text-sm font-medium text-ink">{user.displayName ?? "Signed in"}</p>
+                        <p className="text-xs text-body">{user.email ?? "Firebase account"}</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void signOut()}
+                      className="text-sm font-medium text-ink/70 hover:text-ink transition-colors"
+                    >
+                      Sign out
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <Link
+                      to="/login"
+                      className="text-sm font-medium text-ink/70 hover:text-ink transition-colors"
+                    >
+                      Sign in
+                    </Link>
+                    <Link
+                      to="/register"
+                      className="inline-flex items-center justify-center rounded-full bg-ink px-4 py-2 text-sm font-medium text-cream shadow-sm transition-colors hover:bg-ink-hover"
+                    >
+                      Get started
+                    </Link>
+                  </>
+                )}
               </div>
 
               {/* Mobile Menu Trigger */}
@@ -175,49 +190,59 @@ export default function SiteNav({ solid = false, hideDashboard = false }: Props)
                 {link.label}
               </Link>
             ))}
-            <Show when="signed-in">
-              <Link
-                to="/dashboard"
-                onClick={() => setMenuOpen(false)}
-                className="text-2xl font-semibold text-ink py-4 border-b border-ink/10"
-              >
-                Dashboard
-              </Link>
-              {!hideDashboard && (
+            {user ? (
+              <>
                 <Link
-                  to="/settings"
+                  to="/dashboard"
                   onClick={() => setMenuOpen(false)}
                   className="text-2xl font-semibold text-ink py-4 border-b border-ink/10"
                 >
-                  Settings
+                  Dashboard
                 </Link>
-              )}
-              <div className="mt-8 flex items-center gap-4">
-                <UserButton />
-                <div>
-                  <p className="text-sm font-medium text-ink">Your Account</p>
-                  <p className="text-xs text-body">Manage profile & billing</p>
+                {!hideDashboard && (
+                  <Link
+                    to="/settings"
+                    onClick={() => setMenuOpen(false)}
+                    className="text-2xl font-semibold text-ink py-4 border-b border-ink/10"
+                  >
+                    Settings
+                  </Link>
+                )}
+                <div className="mt-8 flex items-center gap-4">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-ink text-sm font-semibold text-cream">
+                    {(user.displayName ?? user.email ?? "U").slice(0, 2).toUpperCase()}
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-ink">{user.displayName ?? "Your account"}</p>
+                    <p className="text-xs text-body">{user.email ?? "Firebase account"}</p>
+                  </div>
                 </div>
-              </div>
-            </Show>
-            <Show when="signed-out">
+                <button
+                  type="button"
+                  onClick={() => void signOut()}
+                  className="mt-8 flex w-full items-center justify-center rounded-full bg-ink px-6 py-4 text-lg font-medium text-cream"
+                >
+                  Sign out
+                </button>
+              </>
+            ) : (
               <div className="mt-8 flex flex-col gap-3">
                 <Link
-                  to="/sign-in/$"
+                  to="/login"
                   onClick={() => setMenuOpen(false)}
                   className="flex items-center justify-center rounded-full bg-ink px-6 py-4 text-lg font-medium text-cream"
                 >
                   Sign in
                 </Link>
                 <Link
-                  to="/sign-up/$"
+                  to="/register"
                   onClick={() => setMenuOpen(false)}
                   className="flex items-center justify-center rounded-full border border-ink/15 bg-white px-6 py-4 text-lg font-medium text-ink"
                 >
                   Get started
                 </Link>
               </div>
-            </Show>
+            )}
           </nav>
         </div>
       </aside>

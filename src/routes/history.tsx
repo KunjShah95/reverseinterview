@@ -1,7 +1,5 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { useServerFn } from "@tanstack/react-start";
 import { ArrowRight, Loader2 } from "lucide-react";
 import DashboardSidebar from "@/components/DashboardSidebar";
 import SiteFooter from "@/components/SiteFooter";
@@ -11,11 +9,12 @@ import {
   DonutGraphCard,
   SparklineGraphCard,
 } from "@/components/InsightGraphs";
-import { getSession } from "@/lib/auth-functions";
+import { useFirebaseAuth } from "@/lib/firebase-auth";
 import { getSessionId } from "@/lib/session";
+import { listUserReports, getUserDashboardStats } from "@/lib/firestore";
 import {
-  getLocalDashboardStats,
-  listLocalAnalysisRecords,
+  getAllLocalDashboardStats,
+  listAllLocalAnalysisRecords,
   type LocalAnalysisRecord,
 } from "@/lib/local-analysis";
 
@@ -38,34 +37,55 @@ type HistoryStats = {
 };
 
 function History() {
-  const navigate = useNavigate();
-  const fetchSession = useServerFn(getSession);
+  const { user, loading } = useFirebaseAuth();
   const [stats, setStats] = useState<HistoryStats | null>(null);
   const [records, setRecords] = useState<LocalAnalysisRecord[]>([]);
+  const [firestoreLoading, setFirestoreLoading] = useState(false);
 
-  const { data: session, isLoading: sessionLoading } = useQuery({
-    queryKey: ["session"],
-    queryFn: () => fetchSession(),
-    refetchOnWindowFocus: true,
-    staleTime: 30_000,
-  });
-
+  // Always load localStorage data on mount (works for unregistered users).
+  // We read *all* local analyses — not just the current session — so users
+  // still see analyses they ran before logging in (those were saved under
+  // the anonymous device UUID, not the firebase UID).
   useEffect(() => {
-    if (!sessionLoading && session && !session.authenticated) {
-      navigate({ to: "/login" });
-    }
-  }, [session, sessionLoading, navigate]);
+    if (getSessionId() === "ssr") return;
+    setStats(getAllLocalDashboardStats());
+    setRecords(listAllLocalAnalysisRecords());
+  }, []);
 
+  // When user is authenticated, also load Firestore data and merge
   useEffect(() => {
-    if (!session?.authenticated) return;
-    const sid = getSessionId();
-    if (sid === "ssr") return;
+    if (!user) return;
+    setFirestoreLoading(true);
+    Promise.all([
+      listUserReports(user.uid),
+      getUserDashboardStats(user.uid),
+    ])
+      .then(([firestoreRecords, firestoreStats]) => {
+        // Merge: Firestore data takes priority, dedup by ID, then fill in
+        // stats from Firestore but layer local-only counts on top.
+        const localRecords = listAllLocalAnalysisRecords();
+        const firestoreIds = new Set(firestoreRecords.map((r) => r.id));
+        const localOnlyRecords = localRecords.filter((r) => !firestoreIds.has(r.id));
+        const merged = [...firestoreRecords, ...localOnlyRecords];
+        merged.sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        );
+        setRecords(merged);
+        setStats({
+          total: merged.length,
+          proceed: firestoreStats.proceed + countRecommendation(localOnlyRecords, "proceed"),
+          caution: firestoreStats.caution + countRecommendation(localOnlyRecords, "caution"),
+          avoid: firestoreStats.avoid + countRecommendation(localOnlyRecords, "avoid"),
+          running: firestoreStats.running + countRunning(localOnlyRecords),
+        });
+      })
+      .catch((err) => {
+        console.error("Failed to load Firestore reports:", err);
+      })
+      .finally(() => setFirestoreLoading(false));
+  }, [user]);
 
-    setStats(getLocalDashboardStats(sid));
-    setRecords(listLocalAnalysisRecords(sid));
-  }, [session]);
-
-  if (sessionLoading) {
+  if (loading) {
     return (
       <main className="min-h-screen bg-paper lg:pl-72">
         <DashboardSidebar />
@@ -79,10 +99,6 @@ function History() {
       </main>
     );
   }
-
-  if (!session?.authenticated) return null;
-
-  const user = session.user;
   const total = stats?.total ?? 0;
   const avgRisk = records.length ? Math.round(average(records.map(getRiskScore))) : 0;
   const recentRecords = records.slice(0, 6);
@@ -138,7 +154,7 @@ function History() {
         </header>
 
         <div className="mt-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricCard label="Saved reports" value={stats?.total ?? 0} caption="Everything in this session" tone="ink" />
+          <MetricCard label="Saved reports" value={stats?.total ?? 0} caption="Every analysis on this device" tone="ink" />
           <MetricCard label="Proceed" value={stats?.proceed ?? 0} caption="Green-lit after review" tone="safe" />
           <MetricCard label="Caution" value={stats?.caution ?? 0} caption="Needs sharper follow-up" tone="caution" />
           <MetricCard label="Avoid" value={stats?.avoid ?? 0} caption="The archive is warning you" tone="danger" />
@@ -325,6 +341,22 @@ function average(values: number[]) {
 
 function shortDate(value: string) {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date(value));
+}
+
+function countRecommendation(
+  records: LocalAnalysisRecord[],
+  recommendation: "proceed" | "caution" | "avoid",
+) {
+  return records.filter(
+    (r) =>
+      r.status !== "queued" &&
+      r.status !== "running" &&
+      r.result.orchestrator?.recommendation === recommendation,
+  ).length;
+}
+
+function countRunning(records: LocalAnalysisRecord[]) {
+  return records.filter((r) => r.status === "queued" || r.status === "running").length;
 }
 
 function buildVolumeTrend(records: LocalAnalysisRecord[]) {

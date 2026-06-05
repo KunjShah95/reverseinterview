@@ -37,6 +37,7 @@ import { createLocalAnalysis, saveLocalAnalysis } from "@/lib/local-analysis";
 import { startAnalysis, pollAnalysis } from "@/lib/run-analysis";
 import type { RunProgress } from "@/lib/run-analysis";
 import type { AnalysisResult, AnalysisProgress } from "@/lib/analysis-types";
+import { firebaseAuth } from "@/lib/firebase-auth";
 
 const AGENT_STEPS: { id: keyof RunProgress; label: string; icon: typeof Sparkles }[] = [
   { id: "culture", label: "Culture & toxicity scan", icon: ShieldAlert },
@@ -381,7 +382,8 @@ function AnalyzePage() {
               progress: completeProgress,
               result: result.result,
             };
-            saveLocalAnalysis(record);
+            const uid = firebaseAuth?.currentUser?.uid ?? undefined;
+            saveLocalAnalysis(record, uid);
             setSubmitting(false);
             setRunProgress(null);
             navigate({ to: "/report/$id", params: { id: analysisId } });
@@ -403,7 +405,8 @@ function AnalyzePage() {
             yearsExperience: yearsExperience || undefined,
             sessionId: getSessionId(),
           });
-          saveLocalAnalysis(fallback);
+          const uid = firebaseAuth?.currentUser?.uid ?? undefined;
+          saveLocalAnalysis(fallback, uid);
           toast.info("Created a report with initial analysis while deeper AI analysis continues.");
           setSubmitting(false);
           setRunProgress(null);
@@ -423,7 +426,8 @@ function AnalyzePage() {
         yearsExperience: yearsExperience || undefined,
         sessionId: getSessionId(),
       });
-      saveLocalAnalysis(fallback);
+      const uid = firebaseAuth?.currentUser?.uid ?? undefined;
+      saveLocalAnalysis(fallback, uid);
       toast.info("Created a report with initial analysis while deeper AI analysis continues.");
       setSubmitting(false);
       setRunProgress(null);
