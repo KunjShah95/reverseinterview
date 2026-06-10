@@ -794,10 +794,11 @@ function ReportPage() {
     if (!isCurrent()) return;
 
     try {
+      const w = window as unknown as Record<string, unknown>;
       if (
         typeof window !== "undefined" &&
-        (window as any).jspdf === undefined &&
-        (window as any).__printCalled !== undefined
+        w.jspdf === undefined &&
+        w.__printCalled !== undefined
       ) {
         throw new Error("jsPDF constructor is stubbed to throw");
       }
