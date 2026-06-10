@@ -9,7 +9,6 @@ import {
   where,
   orderBy,
   limit,
-  deleteDoc,
   Timestamp,
   type Firestore,
 } from "firebase/firestore";
@@ -69,14 +68,6 @@ export async function saveReportToFirestore(
     recordToFirestore(record),
     { merge: true },
   );
-}
-
-export async function deleteReportFromFirestore(
-  uid: string,
-  reportId: string,
-): Promise<void> {
-  const database = getDb();
-  await deleteDoc(doc(database, "users", uid, "reports", reportId));
 }
 
 export async function getUserReport(

@@ -1,75 +1,84 @@
-# OfferGuard AI — Production README
+# OfferGuard AI
 
-This repository contains the OfferGuard AI web app. The project is optimized for deployment to **Vercel** using TanStack Start's built-in Nitro integration.
+AI-powered job offer analysis. Paste a job description, offer letter, or recruiter chat and get instant insights on toxicity, burnout risk, salary fairness, ghost hiring, and negotiation strategy.
 
-Quick start (local):
+## Tech Stack
 
-1. Copy environment variables:
+- **Framework:** TanStack Start (React 19 + Vite)
+- **Styling:** Tailwind CSS v4
+- **AI Providers:** Groq, Mistral, Gemini, OpenRouter (via Vercel AI SDK)
+- **Auth & Storage:** Firebase (Google sign-in, Firestore)
+- **PDF Generation:** jsPDF
+- **OCR:** Tesseract.js + pdf.js
+- **Testing:** Playwright
 
-   cp .env.example .env
+## Quick Start
 
-2. Install dependencies and run dev server:
+```bash
+cp .env.example .env   # fill in API keys
+npm install
+npm run dev
+```
 
-   npm ci
-   npm run dev
+## Scripts
 
-Production build (local):
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Start dev server |
+| `npm run build` | Production build |
+| `npm run preview` | Preview production build |
+| `npm run lint` | Run ESLint |
+| `npm run format` | Format with Prettier |
+| `npm run test:e2e` | Run Playwright tests |
 
-   npm ci
-   npm run build
+## Environment Variables
 
-To run in Docker (example):
+See [`.env.example`](.env.example) for the full list. Key variables:
 
-   docker build -t offerguard-ai:latest .
-   docker run -p 3000:3000 --env-file .env --rm offerguard-ai:latest
+| Variable | Purpose |
+|----------|---------|
+| `DEFAULT_AI_PROVIDER` | `groq`, `mistral`, `gemini`, or `openrouter` |
+| `DEFAULT_AI_MODEL` | Model name for the chosen provider |
+| `GROQ_API_KEY` | Groq API key |
+| `MISTRAL_API_KEY` | Mistral API key |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | Google AI API key |
+| `OPENROUTER_API_KEY` | OpenRouter API key |
+| `VITE_FIREBASE_*` | Firebase web app config |
 
-CI/CD
+## Deployment
 
-- The `CI` workflow runs lint/typecheck/build on pushes and PRs to `main`.
-- For Vercel deployment, simply connect your GitHub repository to the Vercel dashboard. It will auto-detect the TanStack Start (Nitro) configuration.
+### Vercel (recommended)
 
-Vercel setup checklist:
+1. Import the GitHub repo into Vercel
+2. Build command: `npm run build`
+3. Output directory: `dist`
+4. Add environment variables from `.env.example`
+5. Set `VITE_SITE_URL` to your deployed domain
 
-1. Import the GitHub repo into Vercel.
-2. Keep the default build command as `npm run build`.
-3. Use `dist` as the output directory.
-4. Add the environment variables from `.env.example` in the Vercel project settings.
-5. Set `VITE_SITE_URL` to your deployed domain, for example `https://your-project.vercel.app`.
-6. Redeploy after any env var changes.
+### Docker
 
-The app already includes a Vercel serverless entrypoint in `api/index.js`, so no extra adapter step is needed.
+```bash
+docker build -t offerguard-ai .
+docker run -p 3000:3000 --env-file .env offerguard-ai
+```
 
-Notes
+## CI/CD
 
-- Ensure you fill in Vercel's environment variables with the required runtime secrets (see `.env.example`).
-- The project targets Vercel by default.
+GitHub Actions runs on every push and PR to `main`:
 
-AI provider
+- **Lint & Typecheck** — ESLint + TypeScript compilation
+- **Build** — Verify production build succeeds
+- **E2E Tests** — Playwright tests against the built app
 
-- This app uses the Vercel AI SDK with provider adapters for Groq, Mistral, Gemini, and OpenRouter.
-- Put API keys in environment variables:
-  - `GROQ_API_KEY` for Groq
-  - `MISTRAL_API_KEY` for Mistral
-  - `GOOGLE_GENERATIVE_AI_API_KEY` for Gemini
-  - `OPENROUTER_API_KEY` for OpenRouter
-- Choose the active provider and model with:
-  - `DEFAULT_AI_PROVIDER` (`groq`, `mistral`, `gemini`, or `openrouter`)
-  - `DEFAULT_AI_MODEL` (for example `llama-3.3-70b-versatile`, `mistral-large-latest`, or `gemini-2.0-flash`)
+See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-The provider abstraction lives in `src/lib/ai-provider.server.ts`.
+## Project Structure
 
-Firebase
-
-- The app now includes a client-side Firebase bootstrap in `src/lib/firebase.ts`.
-- Google sign-in and password reset are available on the auth pages and in Settings.
-- Saved reports are mirrored into Firebase Realtime Database under the signed-in user's UID and reloaded into local cache on sign-in.
-- Configure the web app settings through these env vars:
-  - `VITE_FIREBASE_API_KEY`
-  - `VITE_FIREBASE_AUTH_DOMAIN`
-  - `VITE_FIREBASE_DATABASE_URL`
-  - `VITE_FIREBASE_PROJECT_ID`
-  - `VITE_FIREBASE_STORAGE_BUCKET`
-  - `VITE_FIREBASE_MESSAGING_SENDER_ID`
-  - `VITE_FIREBASE_APP_ID`
-  - `VITE_FIREBASE_MEASUREMENT_ID` (optional, used for Analytics)
-- The Firebase module is loaded from the app root so browser-only Analytics initialization stays SSR-safe.
+```
+src/
+  routes/          # TanStack Router file-based routes
+  components/      # React components
+  lib/             # Utilities, AI providers, Firebase, analysis logic
+  hooks/           # Custom React hooks
+tests/             # Playwright E2E tests
+```

@@ -1,7 +1,5 @@
-export type OcrMethod = "text-extract" | "tesseract";
-
 export type OcrSummary = {
-  method: OcrMethod;
+  method: string;
   confidence: number;
   warnings: string[];
   pagesProcessed?: number;

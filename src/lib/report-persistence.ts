@@ -24,10 +24,6 @@ function writeAnalyses(records: LocalAnalysisRecord[]) {
   window.localStorage.setItem(LOCAL_ANALYSES_KEY, JSON.stringify(records.slice(0, 50)));
 }
 
-/**
- * Persist an analysis record to Firestore for the given user.
- * Falls back silently if the user is not authenticated.
- */
 export async function persistAnalysisRecord(record: LocalAnalysisRecord, uid?: string | null) {
   const cleanUid = uid?.trim();
   if (!cleanUid) return;
@@ -38,10 +34,6 @@ export async function persistAnalysisRecord(record: LocalAnalysisRecord, uid?: s
   }
 }
 
-/**
- * Sync reports from Firestore into localStorage so they're available
- * offline or when the server-side DB is unreachable.
- */
 export async function syncFirebaseReportsToLocalCache(uid?: string | null) {
   const cleanUid = uid?.trim();
   if (!cleanUid || !canUseStorage()) return;

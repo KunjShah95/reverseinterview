@@ -471,7 +471,7 @@ export const lookupCompany = createServerFn({ method: "POST" })
       toolName: "company_brief",
       toolDescription: "Structured brief about the company.",
       parameters: lookupSchema,
-    });
+  });
 
     // Re-flatten into the source text the analysis agents will consume.
     const sections: string[] = [];
@@ -499,27 +499,6 @@ export const lookupCompany = createServerFn({ method: "POST" })
     };
   });
 
-const docTypeSchema = {
-  type: "object",
-  properties: {
-    docType: {
-      type: "string",
-      enum: [
-        "job_description",
-        "offer_letter",
-        "recruiter_chat",
-        "company_brief",
-        "unknown",
-      ],
-    },
-    confidence: { type: "string", enum: ["low", "medium", "high"] },
-    reason: { type: "string" },
-    suggestedCompany: { type: "string" },
-    suggestedRole: { type: "string" },
-  },
-  required: ["docType", "confidence", "reason"],
-};
-
 export type DocTypeResult = {
   docType:
     | "job_description"
@@ -533,29 +512,3 @@ export type DocTypeResult = {
   suggestedRole?: string;
 };
 
-/** Quick AI classifier that tags what kind of document the user submitted. */
-export const detectDocType = createServerFn({ method: "POST" })
-  .inputValidator(z.object({ text: z.string().min(20).max(20_000) }))
-  .handler(async ({ data }): Promise<DocTypeResult> => {
-    const { arguments: parsed } = await callStructured<DocTypeResult>({
-      messages: [
-        {
-          role: "system",
-          content:
-            "Classify the document type. Job description = public posting describing a role. Offer letter = personalized offer with salary, start date, equity terms addressed to a candidate. Recruiter chat = informal back-and-forth messages. Company brief = general company info, not a specific role.",
-        },
-        {
-          role: "user",
-          content: `Classify this:\n\n"""\n${data.text.slice(0, 6000)}\n"""`,
-        },
-      ],
-      toolName: "classify_document",
-      toolDescription: "Tag the document type.",
-      parameters: docTypeSchema,
-    });
-    try {
-      return parsed;
-    } catch {
-      return { docType: "unknown", confidence: "low", reason: "Malformed classifier output." };
-    }
-  });

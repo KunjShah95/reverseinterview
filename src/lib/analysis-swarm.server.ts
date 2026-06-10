@@ -1,41 +1,15 @@
-export const SPECIALIST_AGENT_IDS = [
-  "culture",
-  "burnout",
-  "salary",
-  "ghost",
-  "negotiation",
-  "reverse",
-  "lie",
-  "simulation",
-] as const;
-
-export const SWARM_AGENT_IDS = [
-  ...SPECIALIST_AGENT_IDS,
-  "critic",
-  "orchestrator",
-] as const;
-
-export type SpecialistAgentId = (typeof SPECIALIST_AGENT_IDS)[number];
-export type AgentId = (typeof SWARM_AGENT_IDS)[number];
-export type AgentStatus = "pending" | "running" | "complete" | "failed" | "skipped";
-
 export type AgentProgress = {
-  status: AgentStatus;
+  status: "pending" | "running" | "complete" | "failed" | "skipped";
   startedAt?: string;
   completedAt?: string;
   error?: string;
 };
 
-export type AnalysisProgress = Record<AgentId, AgentProgress>;
-
-export type PartialAnalysisResult = Record<string, unknown> & {
-  critic?: unknown;
-  orchestrator?: unknown;
-};
+export type PartialAnalysisResult = Record<string, unknown>;
 
 export type SwarmPatch = {
   status?: "queued" | "running" | "complete" | "partial" | "failed";
-  progress?: Partial<Record<AgentId, AgentProgress>>;
+  progress?: Partial<Record<string, AgentProgress>>;
   result?: PartialAnalysisResult;
   error?: string | null;
   startedAt?: string;
@@ -43,18 +17,18 @@ export type SwarmPatch = {
 };
 
 export type SwarmAgent<TInput, TResult> = {
-  id: AgentId;
+  id: string;
   run: (context: TInput) => Promise<TResult>;
 };
 
 export type SpecialistAgent<TInput> = {
-  id: SpecialistAgentId;
+  id: string;
   run: (context: TInput) => Promise<unknown>;
 };
 
 export type CriticContext<TInput> = TInput & {
-  specialistResults: Partial<Record<SpecialistAgentId, unknown>>;
-  specialistErrors: Partial<Record<SpecialistAgentId, string>>;
+  specialistResults: Partial<Record<string, unknown>>;
+  specialistErrors: Partial<Record<string, string>>;
 };
 
 export type OrchestratorContext<TInput> = CriticContext<TInput> & {
@@ -71,12 +45,6 @@ export type RunSwarmJobOptions<TInput> = {
   now?: () => string;
 };
 
-export function createInitialProgress(): AnalysisProgress {
-  return Object.fromEntries(
-    SWARM_AGENT_IDS.map((id) => [id, { status: "pending" }])
-  ) as AnalysisProgress;
-}
-
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "string" && error.trim()) return error;
@@ -90,7 +58,7 @@ function isMeaningfulResult(value: unknown): boolean {
   return true;
 }
 
-function isResultPatch(value: unknown): value is PartialAnalysisResult {
+function isResultPatch(value: unknown): value is Record<string, unknown> {
   return (
     !!value &&
     typeof value === "object" &&
@@ -107,9 +75,9 @@ export async function runSwarmJob<TInput>({
   persistPatch,
   now = () => new Date().toISOString(),
 }: RunSwarmJobOptions<TInput>): Promise<void> {
-  const result: PartialAnalysisResult = {};
-  const specialistResults: Partial<Record<SpecialistAgentId, unknown>> = {};
-  const specialistErrors: Partial<Record<SpecialistAgentId, string>> = {};
+  const result: Record<string, unknown> = {};
+  const specialistResults: Partial<Record<string, unknown>> = {};
+  const specialistErrors: Partial<Record<string, string>> = {};
 
   await persistPatch({ status: "running", startedAt: now(), error: null });
 

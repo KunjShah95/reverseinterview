@@ -64,10 +64,6 @@ export async function generateTextWithProvider<
   messages: Required<Parameters<typeof vercelGenerateText>[0]>["messages"];
   output: T;
 }) {
-  if (provider === "vercel") {
-    return vercelGenerateText({ model, messages, output });
-  }
-
   return vercelGenerateText({ model, messages, output });
 }
 

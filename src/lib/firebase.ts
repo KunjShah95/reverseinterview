@@ -1,4 +1,3 @@
-import { getAnalytics, isSupported, type Analytics } from "firebase/analytics";
 import { getApp, getApps, initializeApp, type FirebaseApp } from "firebase/app";
 
 type FirebaseConfig = {
@@ -38,15 +37,3 @@ export const firebaseApp: FirebaseApp | null = hasFirebaseConfig
     : initializeApp(firebaseConfig as Required<FirebaseConfig>)
   : null;
 
-export let firebaseAnalytics: Analytics | null = null;
-
-if (typeof window !== "undefined" && firebaseApp) {
-  void isSupported().then((supported) => {
-    if (!supported) return;
-    firebaseAnalytics = getAnalytics(firebaseApp);
-  });
-}
-
-export function isFirebaseConfigured() {
-  return hasFirebaseConfig;
-}

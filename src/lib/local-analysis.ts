@@ -422,9 +422,7 @@ export function listLocalAnalyses(sessionId: string) {
     }));
 }
 
-export function listLocalAnalysisRecords(sessionId: string) {
-  return readAnalyses().filter((record) => record.sessionId === sessionId);
-}
+
 
 // Returns every locally-saved analysis, regardless of which session it was
 // tagged with. We use this on the history/dashboard pages so users still see
@@ -434,10 +432,7 @@ export function listAllLocalAnalysisRecords() {
   return readAnalyses();
 }
 
-export function getLocalDashboardStats(sessionId: string) {
-  const records = readAnalyses().filter((record) => record.sessionId === sessionId);
-  return computeStats(records);
-}
+
 
 // Session-agnostic version of the above. Counts every analysis in localStorage.
 export function getAllLocalDashboardStats() {

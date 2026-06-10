@@ -578,7 +578,7 @@ export async function runSimulationAgent(input: AnalysisInput): Promise<Simulati
 export async function runCriticAgent(
   input: AnalysisInput,
   specialistResults: Record<string, unknown>,
-  specialistErrors: Record<string, string>,
+  specialistErrors: Partial<Record<string, string>>,
 ): Promise<CriticAgent> {
   const result = await callStructured<{
     unsupportedClaims: string[];
@@ -660,7 +660,7 @@ Review these analyses for quality issues. Focus on whether they stay grounded in
 export async function runOrchestratorAgent(
   input: AnalysisInput,
   specialistResults: Record<string, unknown>,
-  specialistErrors: Record<string, string>,
+  specialistErrors: Partial<Record<string, string>>,
   critic: CriticAgent | null,
 ): Promise<Orchestrator> {
   const result = await callStructured<{

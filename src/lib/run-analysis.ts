@@ -1,9 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import type {
-  AnalysisResult,
   AnalysisProgress,
-  AnalysisStatus,
   PartialAnalysisResult,
   CriticAgent,
 } from "./analysis-types";
@@ -157,8 +155,8 @@ export const startAnalysis = createServerFn({ method: "POST" })
       id: "critic" as const,
       run: async (ctx: {
         sourceText: string;
-        specialistResults: Record<string, unknown>;
-        specialistErrors: Record<string, string>;
+        specialistResults: Partial<Record<string, unknown>>;
+        specialistErrors: Partial<Record<string, string>>;
         company?: string;
         roleTitle?: string;
       }) => {
@@ -170,8 +168,8 @@ export const startAnalysis = createServerFn({ method: "POST" })
       id: "orchestrator" as const,
       run: async (ctx: {
         sourceText: string;
-        specialistResults: Record<string, unknown>;
-        specialistErrors: Record<string, string>;
+        specialistResults: Partial<Record<string, unknown>>;
+        specialistErrors: Partial<Record<string, string>>;
         critic: unknown;
         company?: string;
         roleTitle?: string;

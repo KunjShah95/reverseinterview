@@ -36,7 +36,7 @@ import {
 import { createLocalAnalysis, saveLocalAnalysis } from "@/lib/local-analysis";
 import { startAnalysis, pollAnalysis } from "@/lib/run-analysis";
 import type { RunProgress } from "@/lib/run-analysis";
-import type { AnalysisResult, AnalysisProgress } from "@/lib/analysis-types";
+import type { AnalysisProgress } from "@/lib/analysis-types";
 import { firebaseAuth } from "@/lib/firebase-auth";
 
 const AGENT_STEPS: { id: keyof RunProgress; label: string; icon: typeof Sparkles }[] = [
@@ -240,7 +240,6 @@ function AnalyzePage() {
         );
       }
     } catch (err) {
-      console.error(err);
       const msg = err instanceof Error ? err.message : "PDF parse failed.";
       toast.error(msg);
     } finally {
@@ -282,7 +281,6 @@ function AnalyzePage() {
         toast.success("Transcribed screenshot — review below, then run analysis.");
       }
     } catch (err) {
-      console.error(err);
       toast.error("Image OCR failed.");
     } finally {
       setExtracting(false);
@@ -309,7 +307,6 @@ function AnalyzePage() {
           : "Loaded company brief — review below, then run analysis.",
       );
     } catch (err) {
-      console.error(err);
       const msg = err instanceof Error ? err.message : "Lookup failed.";
       toast.error(msg);
     } finally {
@@ -410,7 +407,6 @@ function AnalyzePage() {
         }
       }, 1500);
     } catch (err) {
-      console.error(err);
       if (pollingRef.current) clearInterval(pollingRef.current);
       pollingRef.current = null;
       const fallback = createLocalAnalysis({
