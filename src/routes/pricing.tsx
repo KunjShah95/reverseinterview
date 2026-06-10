@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import SiteNav from "@/components/SiteNav";
 import SiteFooter from "@/components/SiteFooter";
-import { Check, Sparkles, Shield, Download, Infinity, Smartphone } from "lucide-react";
+import { Check, Sparkles, Shield, Download, Smartphone } from "lucide-react";
 
 export const Route = createFileRoute("/pricing")({
   head: () => ({

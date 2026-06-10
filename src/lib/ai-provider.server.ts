@@ -51,16 +51,18 @@ const DEFAULT_MODEL_NAME = (process.env.DEFAULT_AI_MODEL as string)?.trim() || d
 
 export const DEFAULT_MODEL = createModel(DEFAULT_PROVIDER, DEFAULT_MODEL_NAME);
 
-export async function generateTextWithProvider({
+export async function generateTextWithProvider<
+  T extends Parameters<typeof vercelGenerateText>[0]["output"]
+>({
   provider = DEFAULT_PROVIDER,
   model = DEFAULT_MODEL,
   messages,
   output,
 }: {
   provider?: ProviderName;
-  model?: any;
-  messages: any[];
-  output: any;
+  model?: Parameters<typeof vercelGenerateText>[0]["model"];
+  messages: Required<Parameters<typeof vercelGenerateText>[0]>["messages"];
+  output: T;
 }) {
   if (provider === "vercel") {
     return vercelGenerateText({ model, messages, output });

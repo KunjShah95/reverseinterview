@@ -1,6 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import type { AnalysisResult, AnalysisProgress, AnalysisStatus } from "./analysis-types";
+import type {
+  AnalysisResult,
+  AnalysisProgress,
+  AnalysisStatus,
+  PartialAnalysisResult,
+  CriticAgent,
+} from "./analysis-types";
 import type { AnalysisInput } from "./agents.server";
 import {
   runCultureAgent,
@@ -14,25 +20,26 @@ import {
   runCriticAgent,
   runOrchestratorAgent,
 } from "./agents.server";
+import { runSwarmJob, type SwarmPatch } from "./analysis-swarm.server";
 
 export type RunProgress = {
-  culture: "pending" | "running" | "complete" | "failed";
-  burnout: "pending" | "running" | "complete" | "failed";
-  salary: "pending" | "running" | "complete" | "failed";
-  ghost: "pending" | "running" | "complete" | "failed";
-  negotiation: "pending" | "running" | "complete" | "failed";
-  reverse: "pending" | "running" | "complete" | "failed";
-  lie: "pending" | "running" | "complete" | "failed";
-  simulation: "pending" | "running" | "complete" | "failed";
-  critic: "pending" | "running" | "complete" | "failed";
-  orchestrator: "pending" | "running" | "complete" | "failed";
+  culture: "pending" | "running" | "complete" | "failed" | "skipped";
+  burnout: "pending" | "running" | "complete" | "failed" | "skipped";
+  salary: "pending" | "running" | "complete" | "failed" | "skipped";
+  ghost: "pending" | "running" | "complete" | "failed" | "skipped";
+  negotiation: "pending" | "running" | "complete" | "failed" | "skipped";
+  reverse: "pending" | "running" | "complete" | "failed" | "skipped";
+  lie: "pending" | "running" | "complete" | "failed" | "skipped";
+  simulation: "pending" | "running" | "complete" | "failed" | "skipped";
+  critic: "pending" | "running" | "complete" | "failed" | "skipped";
+  orchestrator: "pending" | "running" | "complete" | "failed" | "skipped";
 };
 
 type RunStatus = {
-  status: "running" | "complete" | "failed";
+  status: "queued" | "running" | "complete" | "partial" | "failed";
   error?: string;
   progress: RunProgress;
-  result?: AnalysisResult;
+  result?: PartialAnalysisResult;
 };
 
 function resetProgress(): RunProgress {
@@ -95,107 +102,100 @@ export const startAnalysis = createServerFn({ method: "POST" })
 
     progressStore.set(analysisId, {
       status: "running",
-      progress: {
-        culture: "running",
-        burnout: "running",
-        salary: "running",
-        ghost: "running",
-        negotiation: "running",
-        reverse: "running",
-        lie: "running",
-        simulation: "running",
-        critic: "pending",
-        orchestrator: "pending",
-      },
+      progress: resetProgress(),
     });
 
-    (async () => {
-      try {
-        const input: AnalysisInput = {
-          sourceText: data.sourceText,
-          company: data.company,
-          roleTitle: data.roleTitle,
-          offeredSalary: data.offeredSalary,
-          location: data.location,
-          yearsExperience: data.yearsExperience,
-        };
+    const input: AnalysisInput = {
+      sourceText: data.sourceText,
+      company: data.company,
+      roleTitle: data.roleTitle,
+      offeredSalary: data.offeredSalary,
+      location: data.location,
+      yearsExperience: data.yearsExperience,
+    };
 
-        const [culture, burnout, salary, ghost, negotiation, reverse, lie, simulation] =
-          await Promise.all([
-            runCultureAgent(input),
-            runBurnoutAgent(input),
-            runSalaryAgent(input),
-            runGhostAgent(input),
-            runNegotiationAgent(input),
-            runReverseAgent(input),
-            runLieAgent(input),
-            runSimulationAgent(input),
-          ]);
+    const persistPatch = async (patch: SwarmPatch) => {
+      const current = progressStore.get(analysisId);
+      if (!current) return;
 
-        const status = progressStore.get(analysisId);
-        if (status) {
-          status.progress.culture = "complete";
-          status.progress.burnout = "complete";
-          status.progress.salary = "complete";
-          status.progress.ghost = "complete";
-          status.progress.negotiation = "complete";
-          status.progress.reverse = "complete";
-          status.progress.lie = "complete";
-          status.progress.simulation = "complete";
-          status.progress.critic = "running";
-        }
-
-        const specialistResults = {
-          culture,
-          burnout,
-          salary,
-          ghost,
-          negotiation,
-          reverse,
-          lie,
-          simulation,
-        } as any;
-
-        const critic = await runCriticAgent(input, specialistResults, {});
-
-        if (progressStore.get(analysisId)) {
-          const s = progressStore.get(analysisId)!;
-          s.progress.critic = "complete";
-          s.progress.orchestrator = "running";
-        }
-
-        const orchestrator = await runOrchestratorAgent(input, specialistResults, {}, critic);
-
-        const result: AnalysisResult = {
-          company: data.company || pickCompany(data.sourceText),
-          roleTitle: data.roleTitle || pickRole(data.sourceText),
-          culture,
-          burnout,
-          salary,
-          ghost,
-          negotiation,
-          reverse,
-          lie,
-          simulation,
-          critic,
-          orchestrator,
-        };
-
-        if (progressStore.get(analysisId)) {
-          const s = progressStore.get(analysisId)!;
-          s.status = "complete";
-          s.progress.orchestrator = "complete";
-          s.result = result;
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Analysis failed";
-        if (progressStore.get(analysisId)) {
-          const s = progressStore.get(analysisId)!;
-          s.status = "failed";
-          s.error = message;
+      if (patch.status) {
+        current.status = patch.status;
+      }
+      if (patch.error !== undefined) {
+        current.error = patch.error ?? undefined;
+      }
+      if (patch.progress) {
+        for (const key of Object.keys(patch.progress) as (keyof RunProgress)[]) {
+          const agentPatch = patch.progress[key];
+          if (agentPatch) {
+            current.progress[key] = agentPatch.status;
+          }
         }
       }
-    })();
+      if (patch.result) {
+        current.result = {
+          company: data.company || pickCompany(data.sourceText),
+          roleTitle: data.roleTitle || pickRole(data.sourceText),
+          ...current.result,
+          ...patch.result,
+        } as PartialAnalysisResult;
+      }
+    };
+
+    const specialistAgents = [
+      { id: "culture" as const, run: runCultureAgent },
+      { id: "burnout" as const, run: runBurnoutAgent },
+      { id: "salary" as const, run: runSalaryAgent },
+      { id: "ghost" as const, run: runGhostAgent },
+      { id: "negotiation" as const, run: runNegotiationAgent },
+      { id: "reverse" as const, run: runReverseAgent },
+      { id: "lie" as const, run: runLieAgent },
+      { id: "simulation" as const, run: runSimulationAgent },
+    ];
+
+    const criticAgent = {
+      id: "critic" as const,
+      run: async (ctx: {
+        sourceText: string;
+        specialistResults: Record<string, unknown>;
+        specialistErrors: Record<string, string>;
+        company?: string;
+        roleTitle?: string;
+      }) => {
+        return runCriticAgent(ctx, ctx.specialistResults, ctx.specialistErrors);
+      },
+    };
+
+    const orchestratorAgent = {
+      id: "orchestrator" as const,
+      run: async (ctx: {
+        sourceText: string;
+        specialistResults: Record<string, unknown>;
+        specialistErrors: Record<string, string>;
+        critic: unknown;
+        company?: string;
+        roleTitle?: string;
+      }) => {
+        return runOrchestratorAgent(
+          ctx,
+          ctx.specialistResults,
+          ctx.specialistErrors,
+          ctx.critic as CriticAgent | null
+        );
+      },
+    };
+
+    // Run swarm in background and return analysis ID immediately
+    runSwarmJob({
+      analysisId,
+      input,
+      specialistAgents,
+      criticAgent,
+      orchestratorAgent,
+      persistPatch,
+    }).catch((err) => {
+      console.error("Swarm job unhandled exception:", err);
+    });
 
     return { analysisId };
   });

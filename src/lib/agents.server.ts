@@ -31,12 +31,6 @@ Your specialty: ${role}
 ${instructions}`;
 }
 
-const COMMON_PARAMS = {
-  model: undefined as any,
-  toolDescription: "",
-  parameters: {} as Record<string, unknown>,
-};
-
 function userPrompt(text: string, extra?: string): string {
   return `Analyze this job text carefully. Base your analysis ONLY on what the text says.
 

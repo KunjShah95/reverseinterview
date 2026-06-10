@@ -353,33 +353,29 @@ function AnalyzePage() {
         try {
           const result = await pollAnalysisFn({ data: { analysisId } });
           if (result.progress) setRunProgress(result.progress);
-          if (result.status === "complete" && result.result) {
+          if ((result.status === "complete" || result.status === "partial") && result.result) {
             if (pollingRef.current) clearInterval(pollingRef.current);
             pollingRef.current = null;
 
             const now = new Date().toISOString();
-            const completeProgress: AnalysisProgress = {
-              culture: { status: "complete", startedAt: now, completedAt: now },
-              burnout: { status: "complete", startedAt: now, completedAt: now },
-              salary: { status: "complete", startedAt: now, completedAt: now },
-              ghost: { status: "complete", startedAt: now, completedAt: now },
-              negotiation: { status: "complete", startedAt: now, completedAt: now },
-              reverse: { status: "complete", startedAt: now, completedAt: now },
-              lie: { status: "complete", startedAt: now, completedAt: now },
-              simulation: { status: "complete", startedAt: now, completedAt: now },
-              critic: { status: "complete", startedAt: now, completedAt: now },
-              orchestrator: { status: "complete", startedAt: now, completedAt: now },
-            };
+            const finalProgress = {} as AnalysisProgress;
+            for (const key of Object.keys(result.progress) as (keyof RunProgress)[]) {
+              finalProgress[key] = {
+                status: result.progress[key],
+                startedAt: now,
+                completedAt: now,
+              };
+            }
             const record = {
               id: analysisId,
               sessionId: getSessionId(),
-              company: result.result.company,
+              company: result.result.company || null,
               createdAt: now,
               startedAt: now,
               completedAt: now,
-              status: "complete" as const,
-              error: null as string | null,
-              progress: completeProgress,
+              status: result.status,
+              error: result.error || null,
+              progress: finalProgress,
               result: result.result,
             };
             const uid = firebaseAuth?.currentUser?.uid ?? undefined;

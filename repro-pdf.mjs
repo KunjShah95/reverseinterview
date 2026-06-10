@@ -52,11 +52,16 @@ await ctx.addInitScript((record) => {
 const page = await ctx.newPage();
 const consoleMsgs = [];
 const pageErrors = [];
+let downloadResolve;
+const downloadPromise = new Promise((resolve) => { downloadResolve = resolve; });
 page.on("console", (msg) => consoleMsgs.push(`[${msg.type()}] ${msg.text()}`));
 page.on("pageerror", (err) => pageErrors.push(err.stack ?? err.message));
-page.on("download", (download) => {
-  console.log(`[repro] download fired: ${download.suggestedFilename()}`);
-  download.saveAs(resolve("tests/artifacts", `repro-${download.suggestedFilename()}`));
+page.on("download", async (download) => {
+  const fileName = download.suggestedFilename();
+  console.log(`[repro] download fired: ${fileName}`);
+  await download.saveAs(resolve("tests/artifacts", `repro-${fileName}`));
+  console.log(`[repro] saved to tests/artifacts/repro-${fileName}`);
+  downloadResolve(fileName);
 });
 
 await page.goto(`${URL}/report/${REPORT_ID}`);
@@ -66,9 +71,16 @@ const btn = page.getByRole("button", { name: /download as pdf/i });
 await btn.waitFor({ state: "visible", timeout: 15_000 });
 console.log("[repro] clicking download button...");
 await btn.click();
-console.log("[repro] button clicked, waiting up to 90s for download...");
-await page.waitForTimeout(90_000);
-await page.screenshot({ path: "tests/artifacts/repro-after-click.png", fullPage: true });
+console.log("[repro] button clicked, waiting up to 30s for download...");
+try {
+  const fileName = await Promise.race([
+    downloadPromise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 30_000)),
+  ]);
+  console.log(`[repro] download completed: ${fileName}`);
+} catch (e) {
+  console.log(`[repro] ${e.message}`);
+}
 console.log("\n=== console messages ===");
 for (const m of consoleMsgs.slice(-60)) console.log(m);
 console.log("\n=== page errors ===");

@@ -361,8 +361,8 @@ export function createLocalAnalysis(input: LocalAnalysisInput): LocalAnalysisRec
   function makeId() {
     try {
       // prefer Web Crypto / Node crypto if available
-      if (typeof crypto !== "undefined" && typeof (crypto as any).randomUUID === "function") {
-        return `local-${(crypto as any).randomUUID()}`;
+      if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        return `local-${crypto.randomUUID()}`;
       }
     } catch (_) {
       // fall through to Math-based fallback

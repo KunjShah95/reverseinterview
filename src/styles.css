@@ -187,3 +187,67 @@
     radial-gradient(rgba(31, 42, 29, 0.035) 1px, transparent 1px);
   background-size: 14px 14px;
 }
+
+/* ── Print / Save-as-PDF styles ────────────────────── */
+/* When the user chooses "Print report", the browser's
+   native PDF engine renders selectable text at small
+   file sizes — perfect for sharing with others. */
+@media print {
+  @page {
+    margin: 15mm 12mm;
+    size: A4 portrait;
+  }
+
+  html, body {
+    background: #fff !important;
+    color: #111 !important;
+    font-size: 10pt;
+    line-height: 1.5;
+  }
+
+  .print\:hidden { display: none !important; }
+
+  .rounded-2xl {
+    border: 1px solid #ddd !important;
+    border-radius: 6pt !important;
+    box-shadow: none !important;
+    page-break-inside: avoid;
+    margin-bottom: 14pt;
+    padding: 12pt 14pt !important;
+    background: #fff !important;
+  }
+
+  .rounded-xl {
+    border: 1px solid #e5e5e5 !important;
+    border-radius: 4pt !important;
+    background: #fafafa !important;
+  }
+
+  .font-display { font-family: 'Times New Roman', 'Georgia', serif !important; }
+
+  h1, h2 { page-break-after: avoid; }
+
+  .rounded-full {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  [style*="background-color"] {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .bg-cream, .bg-cream\/40, .bg-cream\/50, .bg-cream\/60 {
+    background: #f5f1e8 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .text-body { color: #444 !important; }
+  .text-ink  { color: #111 !important; }
+  .text-ink\/60 { color: #666 !important; }
+  .text-ink\/70 { color: #555 !important; }
+  .text-ink\/10 { border-color: #ddd !important; }
+
+  img { max-width: 100% !important; }
+}

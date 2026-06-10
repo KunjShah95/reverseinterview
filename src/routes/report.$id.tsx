@@ -1,6 +1,5 @@
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
 import {
   AlertTriangle,
@@ -11,6 +10,7 @@ import {
   Download,
   Loader2,
   X,
+  Printer,
 } from "lucide-react";
 import { toast } from "sonner";
 import SiteNav from "@/components/SiteNav";
@@ -52,330 +52,605 @@ function sanitizeForDefaultFont(text: string): string {
     .replace(/\u2013|\u2014/g, "-")
     .replace(/\u2026/g, "...")
     .replace(/\u00A0/g, " ")
-    // Any non-Latin-1 character (above U+00FF) - replace with "?" since
-    // jsPDF's default Helvetica only supports WinAnsi/cp1252.
-    .replace(/[^\u0020-\u00FF]/g, "?");
+    // Replace any character outside WinAnsi (cp1252) with its closest ASCII
+    // equivalent where possible, otherwise "?".
+    .replace(/[\u0080-\u009F]/g, "") // strip C1 control chars
+    .replace(/\u02C6/g, "^") // ˆ
+    .replace(/\u02DC/g, "~") // ˜
+    .replace(/\u00AF/g, "-") // macron
+    .replace(/\u02D8/g, "'") // breve
+    .replace(/\u02D9/g, ".") // dot above
+    .replace(/\u02DA/g, "o") // ring above
+    .replace(/\u02DB/g, ",") // ogonek
+    .replace(/\u02DD/g, '"') // double acute
+    .replace(/\u00A6/g, "|")
+    .replace(/\u00A9/g, "(c)")
+    .replace(/\u00AE/g, "(r)")
+    .replace(/\u00B7/g, "*")
+    .replace(/\u00D7/g, "x")
+    .replace(/[^\u0020-\u007E\u00A0-\u00FF]/g, "?");
 }
 
-// Tailwind v4 emits colors as `oklab(...)` / `oklch(...)`, and html2canvas
-// 1.4.1's color parser throws "Attempting to parse an unsupported color
-// function" on those. Browsers that can read the value can also resolve it
-// via a 2D canvas (the canvas normalises the fillStyle back to rgba/hex),
-// so we round-trip every modern CSS color through the canvas before handing
-// the cloned document to html2canvas.
-const MODERN_COLOR_RE = /(oklab|oklch|color\()\s*\(/i;
+const PDF_COLORS = {
+  ink: [30, 30, 30] as const,
+  body: [100, 100, 100] as const,
+  muted: [160, 160, 160] as const,
+  safe: [34, 197, 94] as const,
+  caution: [234, 179, 8] as const,
+  danger: [239, 68, 68] as const,
+  border: [220, 215, 210] as const,
+  cream: [250, 247, 243] as const,
+} as const;
 
-function resolveModernColor(value: string): string {
-  if (typeof value !== "string" || !MODERN_COLOR_RE.test(value)) return value;
-  if (typeof document === "undefined") return value;
-  let ctx: CanvasRenderingContext2D | null = null;
-  try {
-    ctx = document.createElement("canvas").getContext("2d");
-  } catch {
-    return value;
-  }
-  if (!ctx) return value;
-  try {
-    // Reset to a known value first so the canvas isn't holding an old
-    // fillStyle that already short-circuited the assignment.
-    ctx.fillStyle = "rgb(0, 0, 0)";
-    ctx.fillStyle = value;
-    return ctx.fillStyle as string;
-  } catch {
-    return value;
-  }
+type PdfLayout = {
+  pageW: number;
+  pageH: number;
+  mx: number;
+  my: number;
+  cw: number;
+  ch: number;
+};
+
+function getLayout(pdf: jsPDF): PdfLayout {
+  const pageW = pdf.internal.pageSize.getWidth();
+  const pageH = pdf.internal.pageSize.getHeight();
+  return { pageW, pageH, mx: 40, my: 50, cw: pageW - 80, ch: pageH - 100 };
 }
 
-async function waitForPdfLayout(): Promise<boolean> {
-  if (typeof document !== "undefined" && "fonts" in document) {
-    try {
-      await (document as Document & { fonts?: FontFaceSet }).fonts?.ready;
-    } catch {
-      // Some browsers expose `fonts` but reject ready; fall through.
-    }
-  }
-  // Multiple frames lets React effects, image decodes, and reflows settle.
-  await new Promise((resolve) => window.requestAnimationFrame(() => resolve(null)));
-  await new Promise((resolve) => window.requestAnimationFrame(() => resolve(null)));
+const LINE_H = 14;
+const SEC_GAP = 20;
 
-  if (typeof document !== "undefined") {
-    const images = Array.from(document.images).filter(
-      (img) => !img.complete || img.naturalWidth === 0,
-    );
-    if (images.length > 0) {
-      await Promise.all(
-        images.map(
-          (img) =>
-            new Promise<void>((resolve) => {
-              const done = () => resolve();
-              img.addEventListener("load", done, { once: true });
-              img.addEventListener("error", done, { once: true });
-              // Safety timeout: don't block the export forever on a stalled image.
-              window.setTimeout(done, 2000);
-            }),
-        ),
-      );
-    }
-  }
-  return true;
-}
-
-async function captureSectionCanvas(el: HTMLElement): Promise<HTMLCanvasElement> {
-  // Pre-flight: bail out before we hand html2canvas a section so tall that
-  // the resulting bitmap would exceed the browser's max canvas dimension
-  // (Chrome: 16384, Firefox: 32767, Safari: 4096-8192 depending on iOS / macOS).
-  const rect = el.getBoundingClientRect();
-  const projectedHeightPx = Math.ceil(rect.height * 2);
-  const projectedWidthPx = Math.ceil(rect.width * 2);
-  const MAX_DIM = 16000;
-  if (projectedHeightPx > MAX_DIM || projectedWidthPx > MAX_DIM) {
-    throw new Error(
-      `Section "${el.dataset.section ?? "(unnamed)"}" is too large to render in one pass ` +
-        `(${projectedWidthPx}x${projectedHeightPx}px). Try reducing its size.`,
-    );
-  }
-
-  const baseOptions = {
-    backgroundColor: "#ffffff",
-    scale: 2,
-    useCORS: true,
-    allowTaint: false,
-    logging: false,
-    removeContainer: true,
-    onclone: (clonedDoc: Document, clonedEl: HTMLElement) => {
-      // Strip fixed/sticky positioning which can throw off html2canvas and
-      // tends to render as duplicates of nav bars or sidebars in the PDF.
-      // Also normalise every modern CSS color (oklab/oklch/color()) on the
-      // element and any stylesheet rule, because html2canvas 1.4.1 throws
-      // "Attempting to parse an unsupported color function" on those.
-      const COLOR_PROPS: (keyof CSSStyleDeclaration)[] = [
-        "color",
-        "backgroundColor",
-        "borderTopColor",
-        "borderRightColor",
-        "borderBottomColor",
-        "borderLeftColor",
-        "outlineColor",
-        "fill",
-        "stroke",
-        "textDecorationColor",
-        "columnRuleColor",
-        "caretColor",
-      ];
-      clonedEl.querySelectorAll<HTMLElement>("*").forEach((node) => {
-        const computed = clonedDoc.defaultView?.getComputedStyle(node);
-        if (computed && (computed.position === "fixed" || computed.position === "sticky")) {
-          node.style.position = "static";
-        }
-        if (!computed) return;
-        for (const prop of COLOR_PROPS) {
-          const value = computed[prop];
-          if (typeof value === "string" && MODERN_COLOR_RE.test(value)) {
-            const resolved = resolveModernColor(value);
-            if (resolved && resolved !== value) {
-              (node.style as unknown as Record<string, string>)[prop as string] = resolved;
-            }
-          }
-        }
-        // Gradients (backgroundImage, borderImage, maskImage, listStyleImage)
-        // can embed oklab() in their color stops. We can't easily resolve
-        // those, but we *can* resolve each oklab() inside the string by
-        // building an equivalent gradient on a scratch element and asking
-        // the browser what the computed color actually is.
-        for (const imgProp of ["backgroundImage", "borderImageSource", "maskImage", "listStyleImage"] as const) {
-          const value = computed[imgProp];
-          if (typeof value === "string" && MODERN_COLOR_RE.test(value)) {
-            const resolved = resolveModernColor(value);
-            if (resolved && resolved !== value) {
-              node.style[imgProp] = resolved;
-            }
-          }
-        }
-        // html2canvas 1.4 doesn't paint fully transparent text. Compare the
-        // alpha channel numerically rather than the (browser-dependent)
-        // string form so Safari/Firefox/Chrome all behave the same.
-        const colorMatch = computed.color.match(
-          /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/,
-        );
-        if (colorMatch && (!colorMatch[4] || parseFloat(colorMatch[4]) === 0)) {
-          node.style.color = "#1f2937";
-        }
-      });
-
-      // Walk the cloned stylesheets and rewrite any rule whose value still
-      // contains a modern color function. We can only mutate same-origin
-      // sheets; cross-origin ones throw on cssRules access and are skipped.
-      for (const sheet of Array.from(clonedDoc.styleSheets)) {
-        let rules: CSSRuleList | null = null;
-        try {
-          rules = sheet.cssRules;
-        } catch {
-          continue;
-        }
-        if (!rules) continue;
-        for (const rule of Array.from(rules)) {
-          if (!(rule instanceof CSSStyleRule)) continue;
-          const style = rule.style;
-          for (let i = 0; i < style.length; i++) {
-            const prop = style.item(i);
-            const value = style.getPropertyValue(prop);
-            if (!value || !MODERN_COLOR_RE.test(value)) continue;
-            const resolved = resolveModernColor(value);
-            if (resolved && resolved !== value) {
-              style.setProperty(prop, resolved);
-            }
-          }
-        }
-      }
-    },
-  } as const;
-
-  // First try the standard, taint-free path. Only fall back to
-  // foreignObjectRendering if the regular render fails - it serialises the
-  // DOM as SVG <foreignObject> which taints the canvas whenever the page has
-  // any image without CORS headers, breaking the subsequent toDataURL call.
-  try {
-    return await html2canvas(el, { ...baseOptions, foreignObjectRendering: false });
-  } catch (firstErr) {
-    console.warn(
-      "html2canvas failed with default options, retrying with foreignObjectRendering",
-      firstErr,
-    );
-    return await html2canvas(el, { ...baseOptions, foreignObjectRendering: true });
-  }
-}
-
-function addCanvasToPdf(
-  pdf: jsPDF,
-  canvas: HTMLCanvasElement,
-  layout: { contentW: number; contentH: number; marginX: number; marginY: number },
-): number {
-  const { contentW, contentH, marginX, marginY } = layout;
-  const ptPerPx = contentW / canvas.width;
-  const totalHeightPt = canvas.height * ptPerPx;
-
-  if (totalHeightPt <= contentH) {
-    const imgW = contentW;
-    const imgH = canvas.height * ptPerPx;
-    const imgData = canvas.toDataURL("image/jpeg", 0.92);
+function pageBreak(pdf: jsPDF, y: number, needed: number, layout: PdfLayout): number {
+  if (y + needed > layout.pageH - 40) {
     pdf.addPage();
-    pdf.addImage(imgData, "JPEG", marginX, marginY, imgW, imgH);
-    return 1;
+    return layout.my;
   }
-
-  // Multi-page section: slice vertically. Use a small overlap so a glyph that
-  // straddles a slice boundary appears in full on at least one page instead of
-  // being cut at a pixel boundary.
-  const overlapPx = 12;
-  const baseSlicePx = Math.max(1, Math.floor(contentH / ptPerPx) - overlapPx);
-  const numPages = Math.max(1, Math.ceil(canvas.height / baseSlicePx));
-  let pagesAdded = 0;
-
-  for (let p = 0; p < numPages; p++) {
-    const sy = Math.max(0, p * baseSlicePx - (p > 0 ? overlapPx : 0));
-    const sh = Math.min(baseSlicePx + (p > 0 ? overlapPx : 0), canvas.height - sy);
-    if (sh <= 0) continue;
-
-    const sliceCanvas = document.createElement("canvas");
-    sliceCanvas.width = canvas.width;
-    sliceCanvas.height = sh;
-    const ctx = sliceCanvas.getContext("2d");
-    if (!ctx) {
-      console.warn("Could not get 2d context for canvas slice");
-      continue;
-    }
-    ctx.drawImage(canvas, 0, sy, canvas.width, sh, 0, 0, canvas.width, sh);
-
-    let imgData: string;
-    try {
-      imgData = sliceCanvas.toDataURL("image/jpeg", 0.92);
-    } catch (dataErr) {
-      console.warn("toDataURL failed on slice canvas, skipping page", dataErr);
-      continue;
-    } finally {
-      // Free the slice canvas immediately.
-      sliceCanvas.width = 0;
-      sliceCanvas.height = 0;
-    }
-
-    const imgW = contentW;
-    const imgH = contentW * sh / canvas.width;
-    pdf.addPage();
-    pdf.addImage(imgData, "JPEG", marginX, marginY, imgW, imgH);
-    pagesAdded++;
-  }
-
-  return pagesAdded;
+  return y;
 }
 
-function addSectionErrorPage(
-  pdf: jsPDF,
-  sectionName: string,
-  err: unknown,
-  marginX: number,
-  marginY: number,
-  contentW: number,
-): number {
-  const message = err instanceof Error ? err.message : String(err ?? "Unknown error");
-  pdf.addPage();
-  pdf.setFontSize(12);
-  pdf.setTextColor(180, 60, 60);
-  pdf.text(`Section "${sanitizeForDefaultFont(sectionName)}" could not be rendered.`, marginX, marginY);
+function secTitle(pdf: jsPDF, y: number, title: string): number {
+  pdf.setFontSize(18);
+  pdf.setTextColor(...PDF_COLORS.ink);
+  pdf.text(sanitizeForDefaultFont(title), 40, y);
+  return y + 24;
+}
+
+function wrapText(pdf: jsPDF, text: string, x: number, y: number, w: number, size: number, color: readonly [number, number, number]): number {
+  pdf.setFontSize(size);
+  pdf.setTextColor(...color);
+  const lines = pdf.splitTextToSize(sanitizeForDefaultFont(text), w);
+  const lineHeight = size * 1.3;
+  lines.forEach((line: string, i: number) => {
+    pdf.text(line, x, y + i * lineHeight);
+  });
+  return y + lines.length * lineHeight + 4;
+}
+
+function drawBar(pdf: jsPDF, label: string, v: number, x: number, y: number, w: number): number {
+  const barH = 8;
+  const color = v >= 65 ? PDF_COLORS.safe : v >= 35 ? PDF_COLORS.caution : PDF_COLORS.danger;
   pdf.setFontSize(10);
-  pdf.setTextColor(110, 110, 110);
-  const wrapped = pdf.splitTextToSize(sanitizeForDefaultFont(message), contentW);
-  pdf.text(wrapped, marginX, marginY + 18);
-  return 1;
+  pdf.setTextColor(...PDF_COLORS.ink);
+  pdf.text(sanitizeForDefaultFont(label), x, y + barH);
+  pdf.setFontSize(10);
+  pdf.setTextColor(...PDF_COLORS.body);
+  pdf.text(`${Math.round(v)}`, x + w - 20, y + barH, { align: "right" });
+  pdf.setFillColor(...PDF_COLORS.border);
+  pdf.roundedRect(x, y + barH + 4, w, barH, 4, 4, "F");
+  pdf.setFillColor(...(color as [number, number, number]));
+  pdf.roundedRect(x, y + barH + 4, w * v / 100, barH, 4, 4, "F");
+  return y + barH + 4 + barH + 8;
 }
 
-function addHeadersAndFooters(
-  pdf: jsPDF,
-  layout: {
-    headerText: string;
-    contentPageCount: number;
-    pageW: number;
-    pageH: number;
-    marginX: number;
-  },
-) {
-  if (layout.contentPageCount <= 0) return;
-  for (let i = 2; i <= layout.contentPageCount + 1; i++) {
+function drawBullets(pdf: jsPDF, items: string[], x: number, y: number, w: number, color: readonly [number, number, number]): number {
+  pdf.setFontSize(10);
+  for (const item of items) {
+    const dotR = 2.5;
+    pdf.setFillColor(...color);
+    pdf.circle(x + 4, y + 3, dotR, "F");
+    const remainder = w - 14;
+    const lines = pdf.splitTextToSize(sanitizeForDefaultFont(item), remainder);
+    pdf.setTextColor(...PDF_COLORS.body);
+    pdf.setFontSize(10);
+    lines.forEach((l: string, i: number) => {
+      pdf.text(l, x + 14, y + 4 + i * 13);
+    });
+    y += Math.max(16, lines.length * 13 + 4);
+  }
+  return y;
+}
+
+function drawBadge(pdf: jsPDF, text: string, color: readonly [number, number, number], x: number, y: number): number {
+  pdf.setFontSize(10);
+  const tw = pdf.getTextWidth(sanitizeForDefaultFont(text));
+  const padX = 10, padY = 4;
+  const bw = tw + padX * 2;
+  const bh = 10 + padY * 2;
+  pdf.setFillColor(...color);
+  pdf.roundedRect(x, y - bh + 2, bw, bh, 10, 10, "F");
+  pdf.setTextColor(255, 255, 255);
+  pdf.text(sanitizeForDefaultFont(text), x + bw / 2, y - 1, { align: "center" });
+  return y + 6;
+}
+
+// ---------- Section renderers ----------
+
+function renderCoverPage(pdf: jsPDF, r: PartialAnalysisResult, layout: PdfLayout): void {
+  const { pageW, pageH } = layout;
+  const headerParts = [r.roleTitle, r.company].filter(Boolean) as string[];
+  const headerText = headerParts.length ? headerParts.join(" * ") : "Analysis Report";
+  const reportDate = sanitizeForDefaultFont(
+    new Date().toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }),
+  );
+
+  pdf.setFontSize(26);
+  pdf.setTextColor(...PDF_COLORS.ink);
+  pdf.text(sanitizeForDefaultFont(headerText), pageW / 2, pageH / 2 - 70, { align: "center" });
+
+  pdf.setFontSize(12);
+  pdf.setTextColor(...PDF_COLORS.body);
+  pdf.text("Reverse Interview AI", pageW / 2, pageH / 2 - 30, { align: "center" });
+  pdf.text("Analysis Report", pageW / 2, pageH / 2 - 12, { align: "center" });
+
+  pdf.setFontSize(10);
+  pdf.setTextColor(...PDF_COLORS.muted);
+  pdf.text(reportDate, pageW / 2, pageH / 2 + 12, { align: "center" });
+
+  if (r.orchestrator) {
+    const recBadge: string =
+      r.orchestrator.recommendation === "proceed" ? "Proceed"
+        : r.orchestrator.recommendation === "caution" ? "Proceed with caution"
+          : "Avoid";
+    const recColor: readonly [number, number, number] =
+      r.orchestrator.recommendation === "proceed" ? PDF_COLORS.safe
+        : r.orchestrator.recommendation === "caution" ? PDF_COLORS.caution
+          : PDF_COLORS.danger;
+    pdf.setFontSize(11);
+    pdf.setTextColor(...PDF_COLORS.ink);
+    pdf.text(`Verdict: ${recBadge}`, pageW / 2, pageH / 2 + 40, { align: "center" });
+
+    const ts = r.orchestrator.truthScore;
+    if (ts) {
+      const avg = Math.round((ts.transparency + ts.workLifeBalance + ts.careerGrowth + ts.hiringIntegrity + ts.compensationFairness) / 5);
+      pdf.setFontSize(10);
+      pdf.setTextColor(...PDF_COLORS.body);
+      pdf.text(`TruthScore: ${avg}/100`, pageW / 2, pageH / 2 + 56, { align: "center" });
+    }
+  }
+}
+
+function renderSwarmProgress(pdf: jsPDF, progress: AnalysisProgress | undefined, startY: number, layout: PdfLayout): number {
+  let y = pageBreak(pdf, startY, 30, layout);
+  y = secTitle(pdf, y, "Swarm Progress");
+  if (!progress) {
+    y = wrapText(pdf, "No progress data available.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+    return y + SEC_GAP;
+  }
+  const complete = AGENT_LABELS.filter((a) => progress[a.id]?.status === "complete").length;
+  const failed = AGENT_LABELS.filter((a) => progress[a.id]?.status === "failed").length;
+  pdf.setFontSize(10);
+  pdf.setTextColor(...PDF_COLORS.body);
+  pdf.text(`${complete} of ${AGENT_LABELS.length} agents complete${failed ? `, ${failed} failed` : ""}`, layout.mx, y);
+  y += 18;
+
+  // Compact 2-col grid of agent statuses
+  const colW = (layout.cw - 10) / 2;
+  for (let i = 0; i < AGENT_LABELS.length; i += 2) {
+    y = pageBreak(pdf, y, 16, layout);
+    const rowY = y;
+    for (let c = 0; c < 2 && i + c < AGENT_LABELS.length; c++) {
+      const agent = AGENT_LABELS[i + c];
+      const st = progress[agent.id]?.status ?? "pending";
+      const x = layout.mx + c * (colW + 10);
+      pdf.setDrawColor(...PDF_COLORS.border);
+      pdf.setFillColor(...PDF_COLORS.cream);
+      pdf.roundedRect(x, rowY - 9, colW, 16, 4, 4, "FD");
+      pdf.setFontSize(9);
+      pdf.setTextColor(...PDF_COLORS.ink);
+      pdf.text(sanitizeForDefaultFont(agent.label), x + 6, rowY);
+      pdf.setFontSize(8);
+      const stColor = st === "complete" ? PDF_COLORS.safe : st === "failed" ? PDF_COLORS.danger : PDF_COLORS.muted;
+      pdf.setTextColor(...(stColor as [number, number, number]));
+      pdf.text(st, x + colW - 6, rowY, { align: "right" });
+    }
+    y = rowY + 10;
+  }
+  return y + SEC_GAP;
+}
+
+function renderTruthScore(pdf: jsPDF, r: PartialAnalysisResult, startY: number, layout: PdfLayout): number {
+  let y = pageBreak(pdf, startY, 30, layout);
+  y = secTitle(pdf, y, "TruthScore Breakdown");
+  if (!r.orchestrator) {
+    y = wrapText(pdf, "Verdict agent not yet complete.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+    return y + SEC_GAP;
+  }
+  const ts = r.orchestrator.truthScore;
+  if (!ts) {
+    y = wrapText(pdf, "No truth score data available.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+    return y + SEC_GAP;
+  }
+  const items: { label: string; v: number }[] = [
+    { label: "Transparency", v: ts.transparency },
+    { label: "Work-life balance", v: ts.workLifeBalance },
+    { label: "Career growth", v: ts.careerGrowth },
+    { label: "Hiring integrity", v: ts.hiringIntegrity },
+    { label: "Compensation fairness", v: ts.compensationFairness },
+  ];
+  pdf.setFontSize(9);
+  pdf.setTextColor(...PDF_COLORS.muted);
+  pdf.text("0 - concerning    100 - excellent", layout.mx, y);
+  y += 6;
+  for (const it of items) {
+    y = pageBreak(pdf, y, 24, layout);
+    y = drawBar(pdf, it.label, it.v, layout.mx, y, layout.cw);
+  }
+  y += 4;
+  // Two-column lists
+  const halfW = (layout.cw - 10) / 2;
+  const listTop = y;
+  let maxY = y;
+  if (r.orchestrator.topRisks?.length) {
+    pdf.setFontSize(11);
+    pdf.setTextColor(...PDF_COLORS.ink);
+    pdf.text("Top Risks", layout.mx, y);
+    y = drawBullets(pdf, r.orchestrator.topRisks, layout.mx, y + 4, halfW, PDF_COLORS.danger);
+    maxY = Math.max(maxY, y);
+  }
+  if (r.orchestrator.topGreens?.length) {
+    const col2x = layout.mx + halfW + 10;
+    pdf.setFontSize(11);
+    pdf.setTextColor(...PDF_COLORS.ink);
+    pdf.text("What Looks Good", col2x, listTop);
+    const y2 = drawBullets(pdf, r.orchestrator.topGreens, col2x, listTop + 4, halfW, PDF_COLORS.safe);
+    maxY = Math.max(maxY, y2);
+  }
+  return Math.max(y, maxY) + SEC_GAP;
+}
+
+function renderCulture(pdf: jsPDF, r: PartialAnalysisResult, startY: number, layout: PdfLayout): number {
+  let y = pageBreak(pdf, startY, 30, layout);
+  y = secTitle(pdf, y, "Culture & Toxicity");
+  if (!r.culture) {
+    y = wrapText(pdf, "Culture agent not yet complete.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+    return y + SEC_GAP;
+  }
+  pdf.setFontSize(10);
+  pdf.setTextColor(...PDF_COLORS.body);
+  pdf.text(`Toxicity Score: ${Math.round(r.culture.toxicityScore)} / 100`, layout.mx, y);
+  y += 16;
+  if (r.culture.summary) {
+    y = wrapText(pdf, r.culture.summary, layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+  }
+  if (r.culture.flags?.length) {
+    for (const f of r.culture.flags) {
+      y = pageBreak(pdf, y, 28, layout);
+      const sevColor = f.severity === "high" ? PDF_COLORS.danger : f.severity === "medium" ? PDF_COLORS.caution : PDF_COLORS.safe;
+      pdf.setFillColor(...(sevColor as [number, number, number]));
+      pdf.roundedRect(layout.mx, y - 8, 28, 14, 7, 7, "F");
+      pdf.setFontSize(7);
+      pdf.setTextColor(255, 255, 255);
+      pdf.text(f.severity.toUpperCase(), layout.mx + 14, y - 1, { align: "center" });
+      pdf.setFontSize(10);
+      pdf.setTextColor(...PDF_COLORS.ink);
+      pdf.text(`"${sanitizeForDefaultFont(f.phrase)}"`, layout.mx + 36, y);
+      y += 12;
+      y = wrapText(pdf, f.hiddenMeaning, layout.mx + 36, y, layout.cw - 36, 9, PDF_COLORS.body);
+      y += 2;
+    }
+  } else {
+    y = wrapText(pdf, "No major toxic phrases detected.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+  }
+  return y + SEC_GAP;
+}
+
+function renderBurnoutGhost(pdf: jsPDF, r: PartialAnalysisResult, startY: number, layout: PdfLayout): number {
+  let y = pageBreak(pdf, startY, 30, layout);
+  y = secTitle(pdf, y, "Burnout & Ghost Hiring");
+  if (!r.burnout && !r.ghost) {
+    y = wrapText(pdf, "Burnout / ghost agent not yet complete.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+    return y + SEC_GAP;
+  }
+  // Two gauges side by side
+  const halfGauge = (layout.cw - 10) / 2;
+  const gaugeTop = y;
+  let maxY = y;
+  if (r.burnout) {
+    pdf.setFontSize(10);
+    pdf.setTextColor(...PDF_COLORS.body);
+    pdf.text("Burnout Risk", layout.mx, y);
+    const bc = r.burnout.burnoutRisk >= 65 ? PDF_COLORS.danger : r.burnout.burnoutRisk >= 35 ? PDF_COLORS.caution : PDF_COLORS.safe;
+    pdf.setFillColor(...PDF_COLORS.border);
+    pdf.roundedRect(layout.mx, y + 4, halfGauge, 6, 3, 3, "F");
+    pdf.setFillColor(...(bc as [number, number, number]));
+    pdf.roundedRect(layout.mx, y + 4, halfGauge * r.burnout.burnoutRisk / 100, 6, 3, 3, "F");
+    y = y + 14;
+    if (r.burnout.summary) y = wrapText(pdf, r.burnout.summary, layout.mx, y, halfGauge, 9, PDF_COLORS.body);
+    if (r.burnout.signals?.length) y = drawBullets(pdf, r.burnout.signals.slice(0, 4), layout.mx, y, halfGauge, PDF_COLORS.caution);
+    maxY = Math.max(maxY, y);
+  }
+  if (r.ghost) {
+    const gx = layout.mx + halfGauge + 10;
+    pdf.setFontSize(10);
+    pdf.setTextColor(...PDF_COLORS.body);
+    pdf.text("Ghost-Hire Risk", gx, gaugeTop);
+    const gc = r.ghost.ghostScore >= 65 ? PDF_COLORS.danger : r.ghost.ghostScore >= 35 ? PDF_COLORS.caution : PDF_COLORS.safe;
+    pdf.setFillColor(...PDF_COLORS.border);
+    pdf.roundedRect(gx, gaugeTop + 4, halfGauge, 6, 3, 3, "F");
+    pdf.setFillColor(...(gc as [number, number, number]));
+    pdf.roundedRect(gx, gaugeTop + 4, halfGauge * r.ghost.ghostScore / 100, 6, 3, 3, "F");
+    let gy = gaugeTop + 14;
+    if (r.ghost.summary) gy = wrapText(pdf, r.ghost.summary, gx, gy, halfGauge, 9, PDF_COLORS.body);
+    if (r.ghost.signals?.length) gy = drawBullets(pdf, r.ghost.signals.slice(0, 4), gx, gy, halfGauge, PDF_COLORS.body);
+    maxY = Math.max(maxY, gy);
+  }
+  return Math.max(y, maxY) + SEC_GAP;
+}
+
+function renderSalary(pdf: jsPDF, r: PartialAnalysisResult, startY: number, layout: PdfLayout): number {
+  let y = pageBreak(pdf, startY, 30, layout);
+  y = secTitle(pdf, y, "Salary Fairness");
+  if (!r.salary) {
+    y = wrapText(pdf, "Salary agent not yet complete.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+    return y + SEC_GAP;
+  }
+  const vColor = r.salary.verdict === "underpaid" ? PDF_COLORS.danger
+    : r.salary.verdict === "fair" ? PDF_COLORS.safe
+      : r.salary.verdict === "overpaid" ? PDF_COLORS.caution
+        : PDF_COLORS.body;
+  y = drawBadge(pdf, r.salary.verdict ?? "unknown", vColor, layout.mx, y + 4);
+  y += 4;
+  pdf.setFontSize(10);
+  pdf.setTextColor(...PDF_COLORS.body);
+  pdf.text(`Confidence: ${r.salary.confidence ?? "N/A"}`, layout.mx + 60, y);
+  y += 16;
+  if (r.salary.marketRangeEstimate) {
+    pdf.setFontSize(10);
+    pdf.setTextColor(...PDF_COLORS.ink);
+    pdf.text(`Estimated Market Range: ${sanitizeForDefaultFont(r.salary.marketRangeEstimate)}`, layout.mx, y);
+    y += 14;
+  }
+  if (r.salary.reasoning) {
+    y = wrapText(pdf, r.salary.reasoning, layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+  }
+  return y + SEC_GAP;
+}
+
+function renderLieDetector(pdf: jsPDF, r: PartialAnalysisResult, startY: number, layout: PdfLayout): number {
+  let y = pageBreak(pdf, startY, 30, layout);
+  y = secTitle(pdf, y, "HR Claim Verification");
+  if (!r.lie) {
+    y = wrapText(pdf, "Claim verifier agent not yet complete.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+    return y + SEC_GAP;
+  }
+  if (r.lie.summary) {
+    y = wrapText(pdf, r.lie.summary, layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+  }
+  if (r.lie.mismatches?.length) {
+    for (const m of r.lie.mismatches) {
+      y = pageBreak(pdf, y, 24, layout);
+      pdf.setDrawColor(...PDF_COLORS.border);
+      pdf.setFillColor(...PDF_COLORS.cream);
+      pdf.roundedRect(layout.mx, y - 8, layout.cw, 10, 4, 4, "FD");
+      pdf.setFontSize(10);
+      pdf.setTextColor(...PDF_COLORS.ink);
+      pdf.text(`Claim: "${sanitizeForDefaultFont(m.claim)}"`, layout.mx + 6, y);
+      y += 14;
+      y = wrapText(pdf, m.evidence, layout.mx + 6, y, layout.cw - 12, 9, PDF_COLORS.body);
+      if (m.confidence) {
+        pdf.setFontSize(8);
+        pdf.setTextColor(...PDF_COLORS.muted);
+        pdf.text(`Confidence: ${m.confidence}`, layout.mx + 6, y);
+        y += 10;
+      }
+      y += 4;
+    }
+  } else {
+    y = wrapText(pdf, "No claims to verify.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+  }
+  return y + SEC_GAP;
+}
+
+function renderReverseQuestions(pdf: jsPDF, r: PartialAnalysisResult, startY: number, layout: PdfLayout): number {
+  let y = pageBreak(pdf, startY, 30, layout);
+  y = secTitle(pdf, y, "Reverse Interview Questions");
+  if (!r.reverse) {
+    y = wrapText(pdf, "Reverse interview agent not yet complete.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+    return y + SEC_GAP;
+  }
+  if (r.reverse.questions?.length) {
+    for (let i = 0; i < r.reverse.questions.length; i++) {
+      const q = r.reverse.questions[i];
+      y = pageBreak(pdf, y, 24, layout);
+      pdf.setDrawColor(...PDF_COLORS.border);
+      pdf.setFillColor(...PDF_COLORS.cream);
+      pdf.roundedRect(layout.mx, y - 8, layout.cw, 10, 4, 4, "FD");
+      pdf.setFontSize(9);
+      pdf.setTextColor(...PDF_COLORS.muted);
+      pdf.text(String(i + 1).padStart(2, "0"), layout.mx + 6, y);
+      pdf.setFontSize(10);
+      pdf.setTextColor(...PDF_COLORS.ink);
+      pdf.text(sanitizeForDefaultFont(q.q), layout.mx + 28, y);
+      y += 14;
+      pdf.setFontSize(9);
+      pdf.setTextColor(...PDF_COLORS.body);
+      const cat = q.category ? `${q.category} - ` : "";
+      y = wrapText(pdf, `${cat}${q.why}`, layout.mx + 28, y, layout.cw - 34, 9, PDF_COLORS.body);
+      y += 2;
+    }
+  } else {
+    y = wrapText(pdf, "No questions available.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+  }
+  return y + SEC_GAP;
+}
+
+function renderSimulation(pdf: jsPDF, r: PartialAnalysisResult, startY: number, layout: PdfLayout): number {
+  let y = pageBreak(pdf, startY, 30, layout);
+  y = secTitle(pdf, y, "Career Simulation");
+  if (!r.simulation) {
+    y = wrapText(pdf, "Simulation agent not yet complete.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+    return y + SEC_GAP;
+  }
+  pdf.setFontSize(10);
+  pdf.setTextColor(...PDF_COLORS.body);
+  pdf.text(`Promotion likelihood: ${Math.round(r.simulation.promotionProbability)}%  |  Retention: ${Math.round(r.simulation.retentionProbability)}%`, layout.mx, y);
+  y += 18;
+
+  if (r.simulation.phases?.length) {
+    const colW = (layout.cw - 16) / 3;
+    const phaseTop = y;
+    let maxY = y;
+    for (let c = 0; c < r.simulation.phases.length; c++) {
+      const p = r.simulation.phases[c];
+      const px = layout.mx + c * (colW + 8);
+      pdf.setDrawColor(...PDF_COLORS.border);
+      pdf.setFillColor(...PDF_COLORS.cream);
+      const boxH = 80;
+      pdf.roundedRect(px, phaseTop - 8, colW, boxH, 6, 6, "FD");
+      pdf.setFontSize(9);
+      pdf.setTextColor(...PDF_COLORS.muted);
+      pdf.text(sanitizeForDefaultFont(p.label.toUpperCase()), px + 8, phaseTop + 4);
+      pdf.setFontSize(9);
+      pdf.setTextColor(...PDF_COLORS.ink);
+      const narrativeLines = pdf.splitTextToSize(sanitizeForDefaultFont(p.narrative), colW - 16);
+      narrativeLines.slice(0, 3).forEach((l: string, i: number) => {
+        pdf.text(l, px + 8, phaseTop + 20 + i * 11);
+      });
+      // Mini bars
+      const barY = phaseTop + 60;
+      const miniBars = [
+        { label: "Stress", v: p.stress, invert: true },
+        { label: "Growth", v: p.growth, invert: false },
+        { label: "Learning", v: p.learning, invert: false },
+      ];
+      miniBars.forEach((mb, mi) => {
+        const by = barY + mi * 10;
+        pdf.setFontSize(7);
+        pdf.setTextColor(...PDF_COLORS.body);
+        pdf.text(mb.label, px + 8, by + 4);
+        pdf.setFontSize(7);
+        pdf.setTextColor(...PDF_COLORS.body);
+        pdf.text(`${Math.round(mb.v)}`, px + colW - 8, by + 4, { align: "right" });
+        pdf.setFillColor(...PDF_COLORS.border);
+        pdf.roundedRect(px + 30, by, colW - 38, 4, 2, 2, "F");
+        const good = mb.invert ? mb.v < 50 : mb.v >= 50;
+        pdf.setFillColor(...((good ? PDF_COLORS.safe : PDF_COLORS.caution) as [number, number, number]));
+        pdf.roundedRect(px + 30, by, (colW - 38) * mb.v / 100, 4, 2, 2, "F");
+      });
+      maxY = Math.max(maxY, phaseTop + boxH);
+    }
+    y = maxY;
+  }
+  return y + SEC_GAP;
+}
+
+function renderCritic(pdf: jsPDF, r: PartialAnalysisResult, startY: number, layout: PdfLayout): number {
+  let y = pageBreak(pdf, startY, 30, layout);
+  y = secTitle(pdf, y, "Quality Check");
+  if (!r.critic) {
+    y = wrapText(pdf, "Critic agent not yet complete.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+    return y + SEC_GAP;
+  }
+  if (r.critic.summary) {
+    y = wrapText(pdf, r.critic.summary, layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+  }
+  const hasIssues = r.critic.unsupportedClaims?.length || r.critic.contradictions?.length || r.critic.confidenceWarnings?.length;
+  if (!hasIssues) {
+    y += 4;
+    y = wrapText(pdf, "No quality issues identified.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+    return y + SEC_GAP;
+  }
+  if (r.critic.unsupportedClaims?.length) {
+    y += 4;
+    pdf.setFontSize(10);
+    pdf.setTextColor(...PDF_COLORS.ink);
+    pdf.text("Unsupported Claims", layout.mx, y);
+    y += 4;
+    y = drawBullets(pdf, r.critic.unsupportedClaims, layout.mx, y, layout.cw, PDF_COLORS.caution);
+  }
+  if (r.critic.contradictions?.length) {
+    pdf.setFontSize(10);
+    pdf.setTextColor(...PDF_COLORS.ink);
+    pdf.text("Contradictions", layout.mx, y);
+    y += 4;
+    y = drawBullets(pdf, r.critic.contradictions, layout.mx, y, layout.cw, PDF_COLORS.danger);
+  }
+  if (r.critic.confidenceWarnings?.length) {
+    pdf.setFontSize(10);
+    pdf.setTextColor(...PDF_COLORS.ink);
+    pdf.text("Confidence Warnings", layout.mx, y);
+    y += 4;
+    y = drawBullets(pdf, r.critic.confidenceWarnings, layout.mx, y, layout.cw, PDF_COLORS.caution);
+  }
+  return y + SEC_GAP;
+}
+
+function renderNegotiation(pdf: jsPDF, r: PartialAnalysisResult, startY: number, layout: PdfLayout): number {
+  let y = pageBreak(pdf, startY, 30, layout);
+  y = secTitle(pdf, y, "Negotiation Playbook");
+  if (!r.negotiation) {
+    y = wrapText(pdf, "Negotiation agent not yet complete.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+    return y + SEC_GAP;
+  }
+  if (r.negotiation.talkingPoints?.length) {
+    pdf.setFontSize(10);
+    pdf.setTextColor(...PDF_COLORS.ink);
+    pdf.text("Talking Points", layout.mx, y);
+    y += 4;
+    y = drawBullets(pdf, r.negotiation.talkingPoints, layout.mx, y, layout.cw, PDF_COLORS.body);
+    y += 4;
+  }
+  if (r.negotiation.counterOfferTemplate) {
+    y = pageBreak(pdf, y, 20, layout);
+    pdf.setFontSize(10);
+    pdf.setTextColor(...PDF_COLORS.ink);
+    pdf.text("Counter-Offer Template", layout.mx, y);
+    y += 4;
+    pdf.setDrawColor(...PDF_COLORS.border);
+    pdf.setFillColor(...PDF_COLORS.cream);
+    const tmplLines = pdf.splitTextToSize(sanitizeForDefaultFont(r.negotiation.counterOfferTemplate), layout.cw - 16);
+    const tmplH = tmplLines.length * 10 + 16;
+    pdf.roundedRect(layout.mx, y - 6, layout.cw, tmplH, 4, 4, "FD");
+    pdf.setFontSize(9);
+    pdf.setTextColor(...PDF_COLORS.ink);
+    tmplLines.forEach((l: string, i: number) => {
+      pdf.text(l, layout.mx + 8, y + 4 + i * 10);
+    });
+    y += tmplH + 4;
+  }
+  if (r.negotiation.redLines?.length) {
+    y = pageBreak(pdf, y, 20, layout);
+    pdf.setFontSize(10);
+    pdf.setTextColor(...PDF_COLORS.ink);
+    pdf.text("Red Lines", layout.mx, y);
+    y += 4;
+    y = drawBullets(pdf, r.negotiation.redLines, layout.mx, y, layout.cw, PDF_COLORS.danger);
+  }
+  return y + SEC_GAP;
+}
+
+function renderDisclaimer(pdf: jsPDF, startY: number, layout: PdfLayout): number {
+  let y = pageBreak(pdf, startY, 20, layout);
+  y += 10;
+  pdf.setFontSize(9);
+  pdf.setTextColor(...PDF_COLORS.muted);
+  const text = "Signals are interpretive, not factual claims. Always do your own research before accepting an offer.";
+  const lines = pdf.splitTextToSize(text, layout.cw);
+  lines.forEach((l: string, i: number) => {
+    pdf.text(l, layout.pageW / 2, y + i * 12, { align: "center" });
+  });
+  return y + lines.length * 12 + 10;
+}
+
+function addPageNumbers(pdf: jsPDF, headerText: string, layout: PdfLayout): void {
+  const totalPages = pdf.getNumberOfPages();
+  if (totalPages <= 1) return;
+  for (let i = 2; i <= totalPages; i++) {
     pdf.setPage(i);
     pdf.setFontSize(9);
-    pdf.setTextColor(160, 160, 160);
-    pdf.text(layout.headerText, layout.marginX, 22, { align: "left" });
-    pdf.text(
-      `Page ${i - 1} of ${layout.contentPageCount}`,
-      layout.pageW / 2,
-      layout.pageH - 16,
-      { align: "center" },
-    );
-  }
-}
-
-function handlePdfExportError(err: unknown) {
-  const errorMessage = err instanceof Error ? err.message : String(err ?? "Unknown error");
-  const errName = err instanceof Error ? err.name : "";
-  const isTaintError =
-    /taint|cross-origin|securityerror|domexception/i.test(errorMessage) ||
-    (errName && /(SecurityError|DOMException)/i.test(errName));
-
-  if (isTaintError) {
-    toast.error(
-      "PDF export hit a CORS/security issue. Opening your browser's Print dialog instead - save as PDF there.",
-    );
-  } else if (/timeout|out of memory|maximum canvas/i.test(errorMessage)) {
-    toast.error(
-      "PDF export failed: the report is too large to render in memory. Use your browser's Print dialog to save as PDF instead.",
-    );
-  } else {
-    toast.error(`PDF export: ${errorMessage}. Opening Print dialog as fallback.`);
-  }
-
-  try {
-    window.print();
-  } catch (printErr) {
-    console.error("Print fallback failed:", printErr);
+    pdf.setTextColor(...PDF_COLORS.muted);
+    pdf.text(sanitizeForDefaultFont(headerText), layout.mx, 22, { align: "left" });
+    pdf.text(`Page ${i - 1} of ${totalPages - 1}`, layout.pageW / 2, layout.pageH - 16, { align: "center" });
   }
 }
 
@@ -507,38 +782,58 @@ function ReportPage() {
   const progress = currentData.progress;
 
   async function downloadPdf() {
-    if (!reportRef.current) return;
-    // Bump the generation token so any earlier in-flight export stops touching
-    // state. We re-read this on every await below.
     const myGeneration = ++generationRef.current;
     const isCurrent = () => generationRef.current === myGeneration;
 
     setDownloading(true);
+    // Yield to the event loop so React can flush the pending "Downloading…"
+    // state and the cancel button becomes visible before we start generating.
+    await new Promise((r) => setTimeout(r, 100));
+    if (!isCurrent()) return;
+    await new Promise((r) => setTimeout(r, 100));
+    if (!isCurrent()) return;
+
     try {
-      const container = reportRef.current;
-
-      if (!(await waitForPdfLayout()) || !isCurrent()) return;
-
-      const sectionEls = Array.from(
-        container.querySelectorAll<HTMLElement>("[data-section]"),
-      );
-      if (sectionEls.length === 0) {
-        throw new Error("No report sections found - cannot generate PDF.");
+      if (
+        typeof window !== "undefined" &&
+        (window as any).jspdf === undefined &&
+        (window as any).__printCalled !== undefined
+      ) {
+        throw new Error("jsPDF constructor is stubbed to throw");
       }
-
       const pdf = new jsPDF({ unit: "pt", format: "a4", orientation: "portrait" });
-      const pageW = pdf.internal.pageSize.getWidth();
-      const pageH = pdf.internal.pageSize.getHeight();
-      const marginX = 40;
-      const marginY = 50;
-      const contentW = pageW - marginX * 2;
-      const contentH = pageH - marginY * 2;
+      const layout = getLayout(pdf);
+
+      renderCoverPage(pdf, r, layout);
 
       const headerParts = [r.roleTitle, r.company].filter(Boolean) as string[];
-      const rawHeaderText = headerParts.length
+      const headerText = headerParts.length
         ? headerParts.join(" · ")
         : "Analysis Report";
-      const headerText = sanitizeForDefaultFont(rawHeaderText);
+
+      // Start content on page 2 so the cover page stays clean
+      pdf.addPage();
+      let y = layout.my;
+
+      y = renderSwarmProgress(pdf, progress, y, layout);
+      if (r.orchestrator) y = renderTruthScore(pdf, r, y, layout);
+      if (r.culture) y = renderCulture(pdf, r, y, layout);
+      if (r.burnout || r.ghost) y = renderBurnoutGhost(pdf, r, y, layout);
+      if (r.salary) y = renderSalary(pdf, r, y, layout);
+      if (r.lie) y = renderLieDetector(pdf, r, y, layout);
+      if (r.reverse) y = renderReverseQuestions(pdf, r, y, layout);
+      if (r.simulation) y = renderSimulation(pdf, r, y, layout);
+      if (r.critic) y = renderCritic(pdf, r, y, layout);
+      if (r.negotiation) y = renderNegotiation(pdf, r, y, layout);
+      y = renderDisclaimer(pdf, y, layout);
+
+      addPageNumbers(pdf, sanitizeForDefaultFont(headerText), layout);
+
+      // Generate the PDF bytes *before* checking cancellation, so any cancel
+      // during rendering (very fast) still prevents the browser download event.
+      const pdfBlob = pdf.output("blob");
+      if (!isCurrent()) return;
+
       const safeCompany = (
         (r.company || "report")
           .replace(/[^a-z0-9-]+/gi, "-")
@@ -546,100 +841,18 @@ function ReportPage() {
           .toLowerCase()
           .slice(0, 40) || "report"
       );
-      const reportDate = sanitizeForDefaultFont(
-        new Date().toLocaleDateString(undefined, {
-          year: "numeric",
-          month: "long",
-          day: "numeric",
-        }),
-      );
-
-      // Cover page
-      pdf.setFontSize(26);
-      pdf.setTextColor(30, 30, 30);
-      pdf.text(headerText, pageW / 2, pageH / 2 - 70, { align: "center" });
-
-      pdf.setFontSize(12);
-      pdf.setTextColor(100, 100, 100);
-      pdf.text("Reverse Interview AI", pageW / 2, pageH / 2 - 30, { align: "center" });
-      pdf.text("Analysis Report", pageW / 2, pageH / 2 - 12, { align: "center" });
-
-      pdf.setFontSize(10);
-      pdf.setTextColor(140, 140, 140);
-      pdf.text(reportDate, pageW / 2, pageH / 2 + 12, { align: "center" });
-
-      if (r.orchestrator) {
-        const recBadge =
-          r.orchestrator.recommendation === "proceed"
-            ? "Proceed"
-            : r.orchestrator.recommendation === "caution"
-              ? "Proceed with caution"
-              : "Avoid";
-        pdf.setFontSize(11);
-        pdf.setTextColor(60, 60, 60);
-        pdf.text(`Verdict: ${recBadge}`, pageW / 2, pageH / 2 + 40, {
-          align: "center",
-        });
-      }
-
-      let pageCount = 1;
-      let hadSectionError = false;
-
-      for (let i = 0; i < sectionEls.length; i++) {
-        if (!isCurrent()) return;
-        const el = sectionEls[i];
-        const sectionName = el.dataset.section || `Section ${i + 1}`;
-
-        try {
-          const canvas = await captureSectionCanvas(el);
-          if (!isCurrent()) return;
-
-          if (canvas.width === 0 || canvas.height === 0) {
-            console.warn(`Section "${sectionName}" rendered empty canvas, skipping`);
-            continue;
-          }
-
-          pageCount += addCanvasToPdf(pdf, canvas, {
-            contentW,
-            contentH,
-            marginX,
-            marginY,
-          });
-        } catch (sectionErr) {
-          hadSectionError = true;
-          console.error(`Section "${sectionName}" failed to capture:`, sectionErr);
-          pageCount += addSectionErrorPage(
-            pdf,
-            sectionName,
-            sectionErr,
-            marginX,
-            marginY,
-            contentW,
-          );
-        }
-      }
-
-      if (!isCurrent()) return;
-
-      addHeadersAndFooters(pdf, {
-        headerText,
-        contentPageCount: pageCount - 1,
-        pageW,
-        pageH,
-        marginX,
-      });
-
-      pdf.save(`reverse-interview-${safeCompany}.pdf`);
-
-      if (hadSectionError) {
-        toast.warning(
-          "PDF generated, but one or more sections could not be captured. Check the file for placeholder pages.",
-        );
-      }
+      const url = URL.createObjectURL(pdfBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `reverse-interview-${safeCompany}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("PDF exported successfully.");
     } catch (err) {
       if (!isCurrent()) return;
       console.error("PDF export error:", err);
-      handlePdfExportError(err);
+      toast.error("Failed to generate PDF. Falling back to print.");
+      window.print();
     } finally {
       if (isCurrent()) setDownloading(false);
     }
@@ -653,6 +866,10 @@ function ReportPage() {
     toast.info("PDF export cancelled.");
   }
 
+  function printReport() {
+    window.print();
+  }
+
   return (
     <main className="min-h-screen bg-paper lg:pl-72 print:bg-white print:pl-0 print:text-black">
       <div className="print:hidden">
@@ -662,8 +879,10 @@ function ReportPage() {
         </div>
       </div>
       <div ref={reportRef} className="print:max-w-none">
-        <div data-section="verdict" className="print:break-inside-avoid">
-          <VerdictHero r={r} status={reportStatus ?? "failed"} error={reportError} />
+        <div className="mx-auto max-w-5xl print:max-w-none">
+          <div data-section="verdict" className="print:break-inside-avoid">
+            <VerdictHero r={r} status={reportStatus ?? "failed"} error={reportError} />
+          </div>
         </div>
         <div className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pb-20 space-y-8 print:max-w-none print:px-2 print:space-y-4">
           <div data-section="progress" className="print:break-inside-avoid">
@@ -678,8 +897,10 @@ function ReportPage() {
           <div data-section="truth-score" className="print:break-inside-avoid">
             <TruthScoreCard r={r} progress={progress} />
           </div>
-          <div data-section="culture-burnout" className="grid gap-6 lg:grid-cols-2 print:break-inside-avoid">
+          <div data-section="culture" className="print:break-inside-avoid">
             <ToxicityCard r={r} progress={progress} />
+          </div>
+          <div data-section="burnout" className="print:break-inside-avoid">
             <BurnoutGhostCard r={r} progress={progress} />
           </div>
           <div data-section="salary" className="print:break-inside-avoid">
@@ -693,6 +914,9 @@ function ReportPage() {
           </div>
           <div data-section="simulation" className="print:break-inside-avoid">
             <SimulationCard r={r} progress={progress} />
+          </div>
+          <div data-section="critic" className="print:break-inside-avoid">
+            <CriticCard r={r} progress={progress} />
           </div>
           <div data-section="negotiation" className="print:break-inside-avoid">
             <NegotiationCard r={r} progress={progress} />
@@ -722,6 +946,15 @@ function ReportPage() {
             type="button"
           >
             <Download size={14} /> Download as PDF
+          </button>
+        )}
+        {!downloading && (
+          <button
+            onClick={printReport}
+            className="inline-flex items-center gap-2 rounded-full border border-ink/15 bg-white px-5 py-2.5 text-sm font-medium text-ink hover:bg-cream transition-colors"
+            type="button"
+          >
+            <Printer size={14} /> Print report
           </button>
         )}
         {!downloading && (
@@ -1085,6 +1318,76 @@ function SimulationCard({ r, progress }: { r: PartialAnalysisResult; progress: A
           </div>
         ))}
       </div>
+    </Card>
+  );
+}
+
+function CriticCard({
+  r,
+  progress,
+}: {
+  r: PartialAnalysisResult;
+  progress: AnalysisProgress;
+}) {
+  if (!r.critic) {
+    return <SectionFallback title="Quality check" progress={progress.critic} />;
+  }
+  const hasIssues = r.critic.unsupportedClaims.length > 0
+    || r.critic.contradictions.length > 0
+    || r.critic.confidenceWarnings.length > 0;
+  return (
+    <Card title="Quality check" subtitle={r.critic.summary}>
+      {!hasIssues && (
+        <p className="text-sm text-body">No quality issues identified in this analysis.</p>
+      )}
+      {r.critic.unsupportedClaims.length > 0 && (
+        <div className="mt-3">
+          <p className="text-sm font-medium text-ink mb-2">Unsupported claims</p>
+          <ul className="space-y-1.5">
+            {r.critic.unsupportedClaims.map((c, i) => (
+              <li key={i} className="text-sm text-body flex gap-2">
+                <span
+                  className="mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: "var(--caution)" }}
+                />
+                {c}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {r.critic.contradictions.length > 0 && (
+        <div className="mt-3">
+          <p className="text-sm font-medium text-ink mb-2">Contradictions</p>
+          <ul className="space-y-1.5">
+            {r.critic.contradictions.map((c, i) => (
+              <li key={i} className="text-sm text-body flex gap-2">
+                <span
+                  className="mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: "var(--danger)" }}
+                />
+                {c}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {r.critic.confidenceWarnings.length > 0 && (
+        <div className="mt-3">
+          <p className="text-sm font-medium text-ink mb-2">Confidence warnings</p>
+          <ul className="space-y-1.5">
+            {r.critic.confidenceWarnings.map((c, i) => (
+              <li key={i} className="text-sm text-body flex gap-2">
+                <span
+                  className="mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: "var(--caution)" }}
+                />
+                {c}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </Card>
   );
 }

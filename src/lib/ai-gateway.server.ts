@@ -5,7 +5,7 @@ import { groq } from "@ai-sdk/groq";
 import { generateText } from "ai";
 import { generateTextWithProvider, Output, DEFAULT_PROVIDER, DEFAULT_MODEL as PROVIDER_DEFAULT_MODEL } from "@/lib/ai-provider.server";
 
-type Message = any;
+type Message = Required<Parameters<typeof generateText>[0]>["messages"][number];
 type ToolCallResult<T> = { name: string; arguments: T };
 
 const DEFAULT_MODEL = PROVIDER_DEFAULT_MODEL ?? groq("llama-3.3-70b-versatile");
@@ -41,9 +41,9 @@ export async function callStructured<T>({
       name: toolName,
       description: toolDescription,
       // library expects a FlexibleSchema; cast here to satisfy typings
-      schema: parameters as any,
+      schema: parameters as Parameters<typeof Output.object>[0]["schema"],
     }),
-  } as any);
+  });
 
   return { name: toolName, arguments: output as T };
 }
@@ -56,6 +56,6 @@ export async function callText({
   model?: Parameters<typeof generateText>[0]["model"];
   messages: Message[];
 }): Promise<string> {
-  const { text } = await generateTextWithProvider({ provider: DEFAULT_PROVIDER, model, messages, output: Output.text() } as any);
+  const { text } = await generateTextWithProvider({ provider: DEFAULT_PROVIDER, model, messages, output: Output.text() });
   return text as string;
 }
