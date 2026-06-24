@@ -88,6 +88,11 @@ function buildProgress(): AnalysisProgress {
     simulation: { status: "complete", startedAt: now, completedAt: now },
     critic: { status: "complete", startedAt: now, completedAt: now },
     orchestrator: { status: "complete", startedAt: now, completedAt: now },
+    legal: { status: "complete", startedAt: now, completedAt: now },
+    managerRadar: { status: "complete", startedAt: now, completedAt: now },
+    powerDynamics: { status: "complete", startedAt: now, completedAt: now },
+    teamChemistry: { status: "complete", startedAt: now, completedAt: now },
+    companyDeepDive: { status: "complete", startedAt: now, completedAt: now },
   };
 }
 

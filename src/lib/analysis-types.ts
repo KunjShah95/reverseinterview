@@ -15,7 +15,12 @@ export type AgentId =
   | "lie"
   | "simulation"
   | "critic"
-  | "orchestrator";
+  | "orchestrator"
+  | "legal"
+  | "managerRadar"
+  | "powerDynamics"
+  | "teamChemistry"
+  | "companyDeepDive";
 
 export type AgentProgress = {
   status: AgentStatus;
@@ -45,11 +50,19 @@ export type BurnoutAgent = {
   summary: string;
 };
 
+export type EquityDetails = {
+  optionsGranted?: number;
+  strikePrice?: number;
+  estimatedPercentage?: number; // e.g. 0.05 for 0.05%
+  vestingSchedule?: string;
+};
+
 export type SalaryAgent = {
   verdict: "underpaid" | "fair" | "overpaid" | "unknown";
   marketRangeEstimate: string;
   confidence: Confidence;
   reasoning: string;
+  equityDetails?: EquityDetails;
 };
 
 export type GhostAgent = {
@@ -80,8 +93,18 @@ export type Mismatch = {
   confidence: Confidence;
 };
 
+export type Discrepancy = {
+  category: "Location" | "Compensation" | "Scope" | "Benefits" | "Other";
+  jdClaim?: string;
+  chatClaim?: string;
+  contractClaim?: string;
+  severity: Severity;
+  assessment: string;
+};
+
 export type LieAgent = {
   mismatches: Mismatch[];
+  discrepancies?: Discrepancy[];
   summary: string;
 };
 
@@ -97,6 +120,89 @@ export type SimulationAgent = {
   phases: Phase[];
   promotionProbability: number; // 0-100
   retentionProbability: number; // 0-100
+};
+
+export type LegalClauseFlag = {
+  clauseType: "IP Assignment" | "Clawback" | "Non-Compete" | "Termination" | "Equity Vesting" | "Other";
+  extractedText: string;
+  riskRating: Severity;
+  explanation: string;
+  mitigationStrategy: string;
+};
+
+export type LegalAgent = {
+  clauses: LegalClauseFlag[];
+  summary: string;
+};
+
+export type PreliminaryResponse = {
+  vibeScore: number;
+  topRedFlags: string[];
+  topGreenFlags: string[];
+};
+
+export type ManagerStyle = "micromanager" | "hands-off" | "delegator" | "coach" | "unknown";
+
+export type ManagerRadarSignal = {
+  phrase: string;
+  implication: string;
+  severity: Severity;
+};
+
+export type ManagerRadarAgent = {
+  inferredStyle: ManagerStyle;
+  confidence: Confidence;
+  signals: ManagerRadarSignal[];
+  autonomyScore: number;
+  communicationClarity: number;
+  redFlags: string[];
+  summary: string;
+};
+
+export type ManipulationSignal = {
+  technique: string;
+  excerpt: string;
+  explanation: string;
+  severity: Severity;
+};
+
+export type PowerDynamicsAgent = {
+  powerScore: number;
+  manipulationSignals: ManipulationSignal[];
+  respectMarkers: string[];
+  gaslightingIndex: number;
+  summary: string;
+};
+
+export type TeamArchetype = "startup-grind" | "corporate-ladder" | "flat-collaborative" | "siloed" | "cross-functional-pod" | "unknown";
+
+export type TeamChemistrySignal = {
+  phrase: string;
+  implication: string;
+};
+
+export type TeamChemistryAgent = {
+  teamArchetype: TeamArchetype;
+  meetingCulture: "heavy" | "moderate" | "light" | "unknown";
+  crossFunctionality: number;
+  supportStructure: number;
+  teamHealthScore: number;
+  signals: TeamChemistrySignal[];
+  summary: string;
+};
+
+export type CompanyDeepDive = {
+  companyName: string;
+  industry: string;
+  stage: "startup" | "growth" | "public" | "nonprofit" | "unknown";
+  fundingStatus: string;
+  layoffHistory: string[];
+  leadershipChanges: string[];
+  glassdoorSummary: string;
+  mediaHighlights: string[];
+  deAuthenticity: { score: number; signals: string[] };
+  growthTrajectory: "growing" | "stable" | "declining" | "unknown";
+  sources: string[];
 };
 
 export type TruthScore = {
@@ -135,11 +241,17 @@ export type AnalysisResult = {
   simulation: SimulationAgent;
   critic?: CriticAgent;
   orchestrator: Orchestrator;
+  legal?: LegalAgent;
+  managerRadar?: ManagerRadarAgent;
+  powerDynamics?: PowerDynamicsAgent;
+  teamChemistry?: TeamChemistryAgent;
+  companyDeepDive?: CompanyDeepDive;
 };
 
 export type PartialAnalysisResult = Partial<
   Omit<AnalysisResult, "orchestrator">
 > & {
+  preliminary?: PreliminaryResponse;
   company?: string;
   roleTitle?: string;
   orchestrator?: Orchestrator;
