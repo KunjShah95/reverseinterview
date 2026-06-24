@@ -7,6 +7,7 @@ import {
   ShieldAlert,
   Quote,
   ArrowRight,
+  Building2,
   Download,
   Loader2,
   X,
@@ -1088,6 +1089,9 @@ function ReportPage() {
           <div data-section="team-chemistry" className="print:break-inside-avoid">
             <TeamChemistryCard r={r} progress={progress} />
           </div>
+          <div data-section="company-deep-dive" className="print:break-inside-avoid">
+            <CompanyDeepDiveCard r={r} progress={progress} />
+          </div>
           <div data-section="disclaimer">
             <p className="text-xs text-body/70 text-center pt-6">
               Signals are interpretive, not factual claims. Always do your own research before
@@ -1765,6 +1769,65 @@ function TeamChemistryCard({ r, progress }: { r: PartialAnalysisResult; progress
         </div>
       )}
       <p className="mt-3 text-sm text-body">{r.teamChemistry.summary}</p>
+    </section>
+  );
+}
+
+function CompanyDeepDiveCard({ r, progress }: { r: PartialAnalysisResult; progress: AnalysisProgress }) {
+  if (!r.companyDeepDive) {
+    return <SectionFallback title="Company background" progress={progress.companyDeepDive} />;
+  }
+  return (
+    <section className="rounded-2xl border border-ink/10 bg-white p-6 shadow-sm">
+      <div className="flex items-center gap-2 mb-4">
+        <Building2 size={18} className="text-heading" />
+        <h2 className="font-display text-xl font-semibold text-ink">Company Background</h2>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
+        <MetricCard label="Industry" value={r.companyDeepDive.industry} />
+        <MetricCard label="Stage" value={r.companyDeepDive.stage.replace("-", " ")} />
+        <MetricCard label="Growth trajectory" value={r.companyDeepDive.growthTrajectory} />
+      </div>
+      {r.companyDeepDive.fundingStatus && (
+        <p className="text-sm mb-2"><span className="font-medium text-ink">Funding:</span> <span className="text-body">{r.companyDeepDive.fundingStatus}</span></p>
+      )}
+      {r.companyDeepDive.layoffHistory.length > 0 && (
+        <div className="mb-3">
+          <p className="text-sm font-medium text-red-700 mb-1">Layoff history</p>
+          {r.companyDeepDive.layoffHistory.map((l, i) => (
+            <p key={i} className="flex items-start gap-2 text-sm text-red-700"><AlertTriangle size={14} className="shrink-0 mt-0.5" />{l}</p>
+          ))}
+        </div>
+      )}
+      {r.companyDeepDive.leadershipChanges.length > 0 && (
+        <div className="mb-3">
+          <p className="text-sm font-medium text-ink/70 mb-1">Leadership changes</p>
+          {r.companyDeepDive.leadershipChanges.map((c, i) => (
+            <p key={i} className="text-sm text-body">• {c}</p>
+          ))}
+        </div>
+      )}
+      {r.companyDeepDive.glassdoorSummary && (
+        <p className="text-sm mb-3"><span className="font-medium text-ink">Employee sentiment:</span> <span className="text-body">{r.companyDeepDive.glassdoorSummary}</span></p>
+      )}
+      {r.companyDeepDive.mediaHighlights.length > 0 && (
+        <div className="mb-3">
+          <p className="text-sm font-medium text-ink/70 mb-1">In the news</p>
+          {r.companyDeepDive.mediaHighlights.map((h, i) => (
+            <p key={i} className="text-sm text-body">• {h}</p>
+          ))}
+        </div>
+      )}
+      {r.companyDeepDive.sources.length > 0 && (
+        <details className="mt-3">
+          <summary className="text-xs text-body/60 cursor-pointer hover:text-ink">Sources ({r.companyDeepDive.sources.length})</summary>
+          <ul className="mt-1 space-y-1">
+            {r.companyDeepDive.sources.map((s, i) => (
+              <li key={i} className="text-xs text-body/60 truncate">{s}</li>
+            ))}
+          </ul>
+        </details>
+      )}
     </section>
   );
 }
