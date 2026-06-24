@@ -350,6 +350,7 @@ function AnalyzePage() {
   }
 
   async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
     let sourceTextVal = text;
     if (mode === "timeline") {
       const parts = [

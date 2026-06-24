@@ -12,6 +12,7 @@ import { getAbsoluteUrl, getSiteUrl } from "@/lib/site-url";
 import "@/lib/firebase";
 import { FirebaseAuthProvider } from "@/lib/firebase-auth";
 
+import { Analytics } from "@vercel/analytics/react";
 import appCss from "../styles.css?url";
 
 function NotFoundComponent() {
@@ -176,6 +177,7 @@ function RootComponent() {
     <QueryClientProvider client={queryClient}>
       <Outlet />
       <Toaster />
+      <Analytics />
     </QueryClientProvider>
   );
 }

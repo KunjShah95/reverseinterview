@@ -2,7 +2,7 @@
 // Do NOT import this file from client code.
 
 import { groq } from "@ai-sdk/groq";
-import { generateText } from "ai";
+import { generateText, jsonSchema } from "ai";
 import { generateTextWithProvider, Output, DEFAULT_PROVIDER, DEFAULT_MODEL as PROVIDER_DEFAULT_MODEL } from "@/lib/ai-provider.server";
 
 type Message = Required<Parameters<typeof generateText>[0]>["messages"][number];
@@ -40,8 +40,7 @@ export async function callStructured<T>({
     output: Output.object({
       name: toolName,
       description: toolDescription,
-      // library expects a FlexibleSchema; cast here to satisfy typings
-      schema: parameters as Parameters<typeof Output.object>[0]["schema"],
+      schema: jsonSchema(parameters),
     }),
   });
 

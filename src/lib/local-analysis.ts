@@ -3,6 +3,7 @@ import type {
   AnalysisStatus,
   PartialAnalysisResult,
   ToxicityFlag,
+  LegalClauseFlag,
 } from "./analysis-types";
 
 const LOCAL_ANALYSES_KEY = "rev-int-local-analyses";
@@ -191,6 +192,26 @@ export function createLocalAnalysis(input: LocalAnalysisInput): LocalAnalysisRec
       ]
     : [];
 
+  const legalClauses: LegalClauseFlag[] = [];
+  if (source.includes("non-compete") || source.includes("competing") || source.includes("solicit")) {
+    legalClauses.push({
+      clauseType: "Non-Compete",
+      extractedText: "Employee shall not engage in any competing business for a period of 12 months after termination.",
+      riskRating: "medium",
+      explanation: "Restricts future employment options in the same domain.",
+      mitigationStrategy: "Negotiate a narrower geographic scope or shorter duration (e.g. 6 months).",
+    });
+  }
+  if (source.includes("intellectual property") || source.includes("invention") || source.includes("belong to the company") || source.includes("proprietary information")) {
+    legalClauses.push({
+      clauseType: "IP Assignment",
+      extractedText: "All inventions and discoveries made during employment, whether on company time or personal time, belong to the company.",
+      riskRating: "high",
+      explanation: "Overbroad IP assignment clause claiming ownership over personal projects.",
+      mitigationStrategy: "Negotiate an exclusion list detailing pre-existing personal intellectual property.",
+    });
+  }
+
   const topRisks = [
     burnoutScore >= 50
       ? "Signals suggest a higher-than-average workload and urgency."
@@ -341,6 +362,12 @@ export function createLocalAnalysis(input: LocalAnalysisInput): LocalAnalysisRec
               "This local fallback is useful for testing, but still not a replacement for the live model.",
             ],
       summary: "Local fallback analysis generated without Supabase or AI provider credentials.",
+    },
+    legal: {
+      clauses: legalClauses,
+      summary: legalClauses.length > 0
+        ? `We detected ${legalClauses.length} clauses that warrant a closer legal review.`
+        : "No critical predatory legal clauses detected in the analyzed text.",
     },
     orchestrator: {
       recommendation,

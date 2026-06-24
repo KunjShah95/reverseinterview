@@ -20,9 +20,12 @@ import { toast } from "sonner";
 import SiteNav from "@/components/SiteNav";
 import SiteFooter from "@/components/SiteFooter";
 import DashboardSidebar from "@/components/DashboardSidebar";
-import { getLocalAnalysis, type LocalAnalysisRecord } from "@/lib/local-analysis";
+import { getLocalAnalysis, saveLocalAnalysis, type LocalAnalysisRecord } from "@/lib/local-analysis";
 import { useFirebaseAuth } from "@/lib/firebase-auth";
 import { getAbsoluteUrl } from "@/lib/site-url";
+import { useServerFn } from "@tanstack/react-start";
+import { pollAnalysis } from "@/lib/run-analysis";
+import type { RunProgress } from "@/lib/run-analysis";
 import type {
   AgentId,
   AnalysisProgress,
@@ -109,7 +112,7 @@ const LINE_H = 14;
 const SEC_GAP = 20;
 
 function pageBreak(pdf: jsPDF, y: number, needed: number, layout: PdfLayout): number {
-  if (y + needed > layout.pageH - 40) {
+  if (y + needed > layout.pageH - 55) {
     pdf.addPage();
     return layout.my;
   }
@@ -179,6 +182,23 @@ function drawBadge(pdf: jsPDF, text: string, color: readonly [number, number, nu
   pdf.setTextColor(255, 255, 255);
   pdf.text(sanitizeForDefaultFont(text), x + bw / 2, y - 1, { align: "center" });
   return y + 6;
+}
+
+function getWrappedTextHeight(pdf: jsPDF, text: string, width: number, fontSize: number): number {
+  pdf.setFontSize(fontSize);
+  const lines = pdf.splitTextToSize(sanitizeForDefaultFont(text), width);
+  const lineHeight = fontSize * 1.3;
+  return lines.length * lineHeight + 4;
+}
+
+function getBulletListHeight(pdf: jsPDF, items: string[], width: number, fontSize: number): number {
+  let height = 0;
+  pdf.setFontSize(fontSize);
+  for (const item of items) {
+    const lines = pdf.splitTextToSize(sanitizeForDefaultFont(item), width - 14);
+    height += Math.max(16, lines.length * 13 + 4);
+  }
+  return height;
 }
 
 // ---------- Section renderers ----------
@@ -296,6 +316,11 @@ function renderTruthScore(pdf: jsPDF, r: PartialAnalysisResult, startY: number, 
   y += 4;
   // Two-column lists
   const halfW = (layout.cw - 10) / 2;
+  const risksHeight = r.orchestrator.topRisks?.length ? 14 + getBulletListHeight(pdf, r.orchestrator.topRisks, halfW, 10) : 0;
+  const greensHeight = r.orchestrator.topGreens?.length ? 14 + getBulletListHeight(pdf, r.orchestrator.topGreens, halfW, 10) : 0;
+  const listBlockHeight = Math.max(risksHeight, greensHeight);
+  y = pageBreak(pdf, y, listBlockHeight, layout);
+
   const listTop = y;
   let maxY = y;
   if (r.orchestrator.topRisks?.length) {
@@ -332,7 +357,8 @@ function renderCulture(pdf: jsPDF, r: PartialAnalysisResult, startY: number, lay
   }
   if (r.culture.flags?.length) {
     for (const f of r.culture.flags) {
-      y = pageBreak(pdf, y, 28, layout);
+      const flagHeight = 16 + getWrappedTextHeight(pdf, f.hiddenMeaning, layout.cw - 36, 9);
+      y = pageBreak(pdf, y, flagHeight, layout);
       const sevColor = f.severity === "high" ? PDF_COLORS.danger : f.severity === "medium" ? PDF_COLORS.caution : PDF_COLORS.safe;
       pdf.setFillColor(...(sevColor as [number, number, number]));
       pdf.roundedRect(layout.mx, y - 8, 28, 14, 7, 7, "F");
@@ -361,6 +387,22 @@ function renderBurnoutGhost(pdf: jsPDF, r: PartialAnalysisResult, startY: number
   }
   // Two gauges side by side
   const halfGauge = (layout.cw - 10) / 2;
+
+  let burnoutHeight = 0;
+  if (r.burnout) {
+    burnoutHeight += 20;
+    if (r.burnout.summary) burnoutHeight += getWrappedTextHeight(pdf, r.burnout.summary, halfGauge, 9);
+    if (r.burnout.signals?.length) burnoutHeight += getBulletListHeight(pdf, r.burnout.signals.slice(0, 4), halfGauge, 10);
+  }
+  let ghostHeight = 0;
+  if (r.ghost) {
+    ghostHeight += 20;
+    if (r.ghost.summary) ghostHeight += getWrappedTextHeight(pdf, r.ghost.summary, halfGauge, 9);
+    if (r.ghost.signals?.length) ghostHeight += getBulletListHeight(pdf, r.ghost.signals.slice(0, 4), halfGauge, 10);
+  }
+  const burnoutGhostBlockHeight = Math.max(burnoutHeight, ghostHeight);
+  y = pageBreak(pdf, y, burnoutGhostBlockHeight, layout);
+
   const gaugeTop = y;
   let maxY = y;
   if (r.burnout) {
@@ -441,7 +483,8 @@ function renderLieDetector(pdf: jsPDF, r: PartialAnalysisResult, startY: number,
     pdf.text("Mismatches & Claims", layout.mx, y);
     y += 14;
     for (const m of r.lie.mismatches) {
-      y = pageBreak(pdf, y, 24, layout);
+      const itemHeight = 18 + getWrappedTextHeight(pdf, m.evidence, layout.cw - 12, 9) + (m.confidence ? 10 : 0);
+      y = pageBreak(pdf, y, itemHeight, layout);
       pdf.setDrawColor(...PDF_COLORS.border);
       pdf.setFillColor(...PDF_COLORS.cream);
       pdf.roundedRect(layout.mx, y - 8, layout.cw, 10, 4, 4, "FD");
@@ -468,7 +511,13 @@ function renderLieDetector(pdf: jsPDF, r: PartialAnalysisResult, startY: number,
     y += 14;
     
     for (const d of r.lie.discrepancies) {
-      y = pageBreak(pdf, y, 80, layout);
+      let blockH = 14 + getWrappedTextHeight(pdf, d.assessment, layout.cw - 16, 9.5);
+      if (d.jdClaim) blockH += getWrappedTextHeight(pdf, `Stage 1 JD: "${d.jdClaim}"`, layout.cw - 24, 8.5);
+      if (d.chatClaim) blockH += getWrappedTextHeight(pdf, `Stage 2 Chats: "${d.chatClaim}"`, layout.cw - 24, 8.5);
+      if (d.contractClaim) blockH += getWrappedTextHeight(pdf, `Stage 3 Contract: "${d.contractClaim}"`, layout.cw - 24, 8.5);
+      const itemHeight = blockH + 16;
+      
+      y = pageBreak(pdf, y, itemHeight, layout);
       const startBoxY = y - 8;
       
       pdf.setFontSize(9);
@@ -513,7 +562,9 @@ function renderReverseQuestions(pdf: jsPDF, r: PartialAnalysisResult, startY: nu
   if (r.reverse.questions?.length) {
     for (let i = 0; i < r.reverse.questions.length; i++) {
       const q = r.reverse.questions[i];
-      y = pageBreak(pdf, y, 24, layout);
+      const cat = q.category ? `${q.category} - ` : "";
+      const itemHeight = 16 + getWrappedTextHeight(pdf, `${cat}${q.why}`, layout.cw - 34, 9);
+      y = pageBreak(pdf, y, itemHeight, layout);
       pdf.setDrawColor(...PDF_COLORS.border);
       pdf.setFillColor(...PDF_COLORS.cream);
       pdf.roundedRect(layout.mx, y - 8, layout.cw, 10, 4, 4, "FD");
@@ -526,7 +577,6 @@ function renderReverseQuestions(pdf: jsPDF, r: PartialAnalysisResult, startY: nu
       y += 14;
       pdf.setFontSize(9);
       pdf.setTextColor(...PDF_COLORS.body);
-      const cat = q.category ? `${q.category} - ` : "";
       y = wrapText(pdf, `${cat}${q.why}`, layout.mx + 28, y, layout.cw - 34, 9, PDF_COLORS.body);
       y += 2;
     }
@@ -550,26 +600,43 @@ function renderSimulation(pdf: jsPDF, r: PartialAnalysisResult, startY: number, 
 
   if (r.simulation.phases?.length) {
     const colW = (layout.cw - 16) / 3;
-    const phaseTop = y;
-    let maxY = y;
+    
+    // Dynamically calculate the maximum narrative lines across all phases
+    let maxNarrativeLines = 0;
+    for (const p of r.simulation.phases) {
+      const lines = pdf.splitTextToSize(sanitizeForDefaultFont(p.narrative), colW - 16);
+      if (lines.length > maxNarrativeLines) {
+        maxNarrativeLines = lines.length;
+      }
+    }
+    
+    // Height includes header space (20), narrative text (maxNarrativeLines * 11), padding (8), and 3 mini-bars (35)
+    const boxH = 20 + (maxNarrativeLines * 11) + 8 + 35;
+    const barYOffset = 20 + (maxNarrativeLines * 11) + 8;
+    
+    // Page break check for the entire simulation block to ensure they stay together on one page
+    const phaseTop = pageBreak(pdf, y, boxH + 8, layout);
+    let maxY = phaseTop;
+    
     for (let c = 0; c < r.simulation.phases.length; c++) {
       const p = r.simulation.phases[c];
       const px = layout.mx + c * (colW + 8);
       pdf.setDrawColor(...PDF_COLORS.border);
       pdf.setFillColor(...PDF_COLORS.cream);
-      const boxH = 80;
       pdf.roundedRect(px, phaseTop - 8, colW, boxH, 6, 6, "FD");
       pdf.setFontSize(9);
       pdf.setTextColor(...PDF_COLORS.muted);
       pdf.text(sanitizeForDefaultFont(p.label.toUpperCase()), px + 8, phaseTop + 4);
       pdf.setFontSize(9);
       pdf.setTextColor(...PDF_COLORS.ink);
+      
       const narrativeLines = pdf.splitTextToSize(sanitizeForDefaultFont(p.narrative), colW - 16);
-      narrativeLines.slice(0, 3).forEach((l: string, i: number) => {
+      narrativeLines.forEach((l: string, i: number) => {
         pdf.text(l, px + 8, phaseTop + 20 + i * 11);
       });
+      
       // Mini bars
-      const barY = phaseTop + 60;
+      const barY = phaseTop + barYOffset;
       const miniBars = [
         { label: "Stress", v: p.stress, invert: true },
         { label: "Growth", v: p.growth, invert: false },
@@ -653,15 +720,17 @@ function renderNegotiation(pdf: jsPDF, r: PartialAnalysisResult, startY: number,
     y += 4;
   }
   if (r.negotiation.counterOfferTemplate) {
-    y = pageBreak(pdf, y, 20, layout);
+    const tmplLines = pdf.splitTextToSize(sanitizeForDefaultFont(r.negotiation.counterOfferTemplate), layout.cw - 16);
+    const tmplH = tmplLines.length * 10 + 16;
+    const templateHeight = 14 + tmplH + 4;
+    y = pageBreak(pdf, y, templateHeight, layout);
+    
     pdf.setFontSize(10);
     pdf.setTextColor(...PDF_COLORS.ink);
     pdf.text("Counter-Offer Template", layout.mx, y);
     y += 4;
     pdf.setDrawColor(...PDF_COLORS.border);
     pdf.setFillColor(...PDF_COLORS.cream);
-    const tmplLines = pdf.splitTextToSize(sanitizeForDefaultFont(r.negotiation.counterOfferTemplate), layout.cw - 16);
-    const tmplH = tmplLines.length * 10 + 16;
     pdf.roundedRect(layout.mx, y - 6, layout.cw, tmplH, 4, 4, "FD");
     pdf.setFontSize(9);
     pdf.setTextColor(...PDF_COLORS.ink);
@@ -671,7 +740,8 @@ function renderNegotiation(pdf: jsPDF, r: PartialAnalysisResult, startY: number,
     y += tmplH + 4;
   }
   if (r.negotiation.redLines?.length) {
-    y = pageBreak(pdf, y, 20, layout);
+    const listHeight = 14 + getBulletListHeight(pdf, r.negotiation.redLines, layout.cw, 10);
+    y = pageBreak(pdf, y, listHeight, layout);
     pdf.setFontSize(10);
     pdf.setTextColor(...PDF_COLORS.ink);
     pdf.text("Red Lines", layout.mx, y);
@@ -688,7 +758,8 @@ function renderEquity(pdf: jsPDF, r: PartialAnalysisResult, startY: number, layo
   let y = pageBreak(pdf, startY, 30, layout);
   y = secTitle(pdf, y, "Equity Options Projection");
   
-  y = pageBreak(pdf, y, 70, layout);
+  const boxHeight = 4 * 14 + 8;
+  y = pageBreak(pdf, y, boxHeight, layout);
   const startBoxY = y - 8;
   
   const optionsGranted = eq.optionsGranted ? eq.optionsGranted.toLocaleString() : "N/A";
@@ -733,7 +804,14 @@ function renderLegal(pdf: jsPDF, r: PartialAnalysisResult, startY: number, layou
   }
   if (r.legal.clauses?.length) {
     for (const c of r.legal.clauses) {
-      y = pageBreak(pdf, y, 120, layout);
+      pdf.setFontSize(8.5);
+      const textLines = pdf.splitTextToSize(sanitizeForDefaultFont(`"${c.extractedText}"`), layout.cw - 24);
+      const textBoxH = textLines.length * 11 + 10;
+      const warningH = getWrappedTextHeight(pdf, `Warning: ${c.explanation}`, layout.cw - 16, 9);
+      const strategyH = getWrappedTextHeight(pdf, `Strategy: ${c.mitigationStrategy}`, layout.cw - 16, 9);
+      const itemHeight = 14 + (textBoxH + 8) + warningH + strategyH + 16;
+
+      y = pageBreak(pdf, y, itemHeight, layout);
       const startBoxY = y - 8;
       
       pdf.setFontSize(10);
@@ -744,15 +822,13 @@ function renderLegal(pdf: jsPDF, r: PartialAnalysisResult, startY: number, layou
       
       const riskText = `Risk: ${c.riskRating.toUpperCase()}`;
       pdf.setFontSize(9);
-      const riskColor = c.riskRating === "high" ? PDF_COLORS.danger : c.riskRating === "medium" ? PDF_COLORS.caution : PDF_COLORS.safe;
+      const riskColor: readonly [number, number, number] = c.riskRating === "high" ? PDF_COLORS.danger : c.riskRating === "medium" ? PDF_COLORS.caution : PDF_COLORS.safe;
       pdf.setTextColor(...riskColor);
       pdf.text(riskText, layout.mx + layout.cw - 8, y, { align: "right" });
       y += 14;
       
       pdf.setFontSize(8.5);
       pdf.setTextColor(...PDF_COLORS.body);
-      const textLines = pdf.splitTextToSize(sanitizeForDefaultFont(`"${c.extractedText}"`), layout.cw - 24);
-      const textBoxH = textLines.length * 11 + 10;
       
       pdf.setFillColor(...PDF_COLORS.cream);
       pdf.roundedRect(layout.mx + 8, y - 6, layout.cw - 16, textBoxH, 2, 2, "F");
@@ -778,12 +854,15 @@ function renderLegal(pdf: jsPDF, r: PartialAnalysisResult, startY: number, layou
 
 
 function renderDisclaimer(pdf: jsPDF, startY: number, layout: PdfLayout): number {
-  let y = pageBreak(pdf, startY, 20, layout);
+  pdf.setFontSize(9);
+  const text = "Signals are interpretive, not factual claims. Always do your own research before accepting an offer.";
+  const lines = pdf.splitTextToSize(text, layout.cw);
+  const neededHeight = 10 + lines.length * 12 + 10;
+  
+  let y = pageBreak(pdf, startY, neededHeight, layout);
   y += 10;
   pdf.setFontSize(9);
   pdf.setTextColor(...PDF_COLORS.muted);
-  const text = "Signals are interpretive, not factual claims. Always do your own research before accepting an offer.";
-  const lines = pdf.splitTextToSize(text, layout.cw);
   lines.forEach((l: string, i: number) => {
     pdf.text(l, layout.pageW / 2, y + i * 12, { align: "center" });
   });
@@ -869,6 +948,8 @@ function ReportPage() {
   // superseded or unmounted export stops touching the PDF/state.
   const generationRef = useRef(0);
 
+  const pollAnalysisFn = useServerFn(pollAnalysis);
+
   useEffect(() => {
     if (loading) return;
     // First try localStorage (works for all users)
@@ -887,6 +968,82 @@ function ReportPage() {
         .catch((err) => console.error("Failed to load from Firestore:", err));
     }
   }, [id, loading, user]);
+
+  useEffect(() => {
+    if (!localData || !ACTIVE_STATUSES.includes(localData.status)) return;
+
+    let active = true;
+    const interval = setInterval(async () => {
+      try {
+        const result = await pollAnalysisFn({ data: { analysisId: id } });
+        if (!active) return;
+
+        if (result.status === "failed") {
+          const updated: LocalAnalysisRecord = {
+            ...localData,
+            status: "failed",
+            error: result.error || "Analysis failed",
+          };
+          setLocalData(updated);
+          saveLocalAnalysis(updated, user?.uid);
+          clearInterval(interval);
+        } else if (result.status === "complete" || result.status === "partial") {
+          const now = new Date().toISOString();
+          const finalProgress = {} as AnalysisProgress;
+          for (const key of Object.keys(result.progress) as (keyof RunProgress)[]) {
+            finalProgress[key] = {
+              status: result.progress[key],
+              startedAt: now,
+              completedAt: now,
+            };
+          }
+          const updated: LocalAnalysisRecord = {
+            ...localData,
+            status: result.status,
+            error: result.error || null,
+            progress: finalProgress,
+            result: result.result as PartialAnalysisResult,
+          };
+          setLocalData(updated);
+          saveLocalAnalysis(updated, user?.uid);
+          clearInterval(interval);
+        } else {
+          // Update in-progress stages & partial results
+          const now = new Date().toISOString();
+          const finalProgress = {} as AnalysisProgress;
+          for (const key of Object.keys(result.progress) as (keyof RunProgress)[]) {
+            finalProgress[key] = {
+              status: result.progress[key],
+              startedAt: now,
+              completedAt: now,
+            };
+          }
+          const updated: LocalAnalysisRecord = {
+            ...localData,
+            status: result.status,
+            progress: finalProgress,
+            result: {
+              ...localData.result,
+              ...result.result,
+            } as PartialAnalysisResult,
+          };
+          setLocalData(updated);
+          // Persist partial results on every tick so no completed agent data is
+          // lost if the server restarts or remaining agents fail.
+          if (result.result && Object.keys(result.result).length > 0) {
+            saveLocalAnalysis(updated, user?.uid);
+          }
+        }
+      } catch (err) {
+        console.error("Error polling report status:", err);
+      }
+    }, 2000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [id, localData?.status, user?.uid]);
 
   // Cancel any in-flight PDF generation when the component unmounts so we
   // don't call setDownloading(false) on a dead component or write a PDF after
@@ -1511,6 +1668,10 @@ function SimulationCard({ r, progress }: { r: PartialAnalysisResult; progress: A
   if (!r.simulation) {
     return <SectionFallback title="If you join - a simulation" progress={progress.simulation} />;
   }
+
+  const [activePhase, setActivePhase] = useState(0);
+  const phases = r.simulation.phases;
+
   return (
     <Card
       title="If you join — a simulation"
@@ -1518,8 +1679,109 @@ function SimulationCard({ r, progress }: { r: PartialAnalysisResult; progress: A
         r.simulation.promotionProbability,
       )}% · Retention: ${Math.round(r.simulation.retentionProbability)}%`}
     >
-      <div className="grid gap-4 md:grid-cols-3">
-        {r.simulation.phases.map((p) => (
+      {/* Interactive timeline view (shown on screen, hidden on print) */}
+      <div className="print:hidden space-y-6">
+        {/* Timeline track progress bar */}
+        <div className="relative flex items-center justify-between px-4 sm:px-12 mb-8">
+          <div className="absolute left-8 right-8 top-1/2 h-0.5 bg-ink/10 -translate-y-1/2 -z-10" />
+          {phases.map((p, idx) => {
+            const isActive = activePhase === idx;
+            return (
+              <button
+                key={p.label}
+                type="button"
+                onClick={() => setActivePhase(idx)}
+                className="flex flex-col items-center gap-2 group focus:outline-none cursor-pointer"
+              >
+                <div
+                  className={`w-8 h-8 rounded-full border-2 flex items-center justify-center font-mono text-xs font-semibold transition-all ${
+                    isActive
+                      ? "bg-ink border-ink text-cream scale-110 shadow-sm"
+                      : "bg-white border-ink/20 text-ink/50 group-hover:border-ink/60 group-hover:text-ink/80"
+                  }`}
+                >
+                  {idx + 1}
+                </div>
+                <span
+                  className={`text-xs font-medium uppercase tracking-wider transition-colors ${
+                    isActive ? "text-ink font-semibold" : "text-ink/50 group-hover:text-ink/80"
+                  }`}
+                >
+                  {p.label}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Active phase detail block */}
+        {phases[activePhase] && (
+          <div className="rounded-xl border border-ink/15 bg-cream/35 p-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-ink/70">
+                Phase {activePhase + 1}: {phases[activePhase].label}
+              </h3>
+              <span className="text-xs text-body font-mono">
+                Milestone {activePhase + 1} of {phases.length}
+              </span>
+            </div>
+            <p className="text-base text-ink leading-relaxed font-sans mb-6">
+              {phases[activePhase].narrative}
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 border-t border-ink/10 pt-4">
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-xs font-medium text-body">
+                  <span>Stress Load</span>
+                  <span className="font-mono">{Math.round(phases[activePhase].stress)}/100</span>
+                </div>
+                <div className="h-2 rounded-full bg-ink/10 overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${phases[activePhase].stress}%`,
+                      backgroundColor: phases[activePhase].stress >= 65 ? "var(--danger)" : phases[activePhase].stress >= 35 ? "var(--caution)" : "var(--safe)",
+                    }}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-xs font-medium text-body">
+                  <span>Career Growth</span>
+                  <span className="font-mono">{Math.round(phases[activePhase].growth)}/100</span>
+                </div>
+                <div className="h-2 rounded-full bg-ink/10 overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${phases[activePhase].growth}%`,
+                      backgroundColor: "var(--heading-accent)",
+                    }}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-xs font-medium text-body">
+                  <span>Learning & Impact</span>
+                  <span className="font-mono">{Math.round(phases[activePhase].learning)}/100</span>
+                </div>
+                <div className="h-2 rounded-full bg-ink/10 overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${phases[activePhase].learning}%`,
+                      backgroundColor: "var(--heading)",
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Static Print fallback (shown on print, hidden on screen) */}
+      <div className="hidden print:grid print:grid-cols-3 print:gap-4 gap-4 md:grid-cols-3">
+        {phases.map((p) => (
           <div key={p.label} className="rounded-xl border border-ink/10 bg-cream/40 p-4">
             <p className="text-xs font-medium uppercase tracking-wider text-ink/60">{p.label}</p>
             <p className="mt-2 text-sm text-ink leading-relaxed">{p.narrative}</p>
@@ -1615,32 +1877,130 @@ function NegotiationCard({
   if (!r.negotiation) {
     return <SectionFallback title="Negotiation playbook" progress={progress.negotiation} />;
   }
+
+  const [targetSalary, setTargetSalary] = useState(r.salary?.marketRangeEstimate || "$130,000");
+  const [wfhDays, setWfhDays] = useState(3);
+  const [extraPto, setExtraPto] = useState(5);
+  const [copied, setCopied] = useState(false);
+
+  const originalTemplate = r.negotiation.counterOfferTemplate;
+
+  // Customizer parser
+  const customizedText = (() => {
+    let text = originalTemplate;
+
+    // Match company name and role
+    if (r.company) {
+      text = text.replace(/\[Company(?:\s+Name)?\]/gi, r.company);
+    }
+    if (r.roleTitle) {
+      text = text.replace(/\[(?:Job\s+)?Title\]|\[Role\]/gi, r.roleTitle);
+    }
+
+    // Match common placeholders like [Target Salary], [Salary], [Salary Number], [Proposed Salary], [$100,000]
+    text = text.replace(/\[(?:Target\s+)?Salary(?:\s+Number)?\]|\[\$[\d,\s]+\]|\[Salary\s+Range\]/gi, targetSalary);
+
+    // Match WFH days
+    text = text.replace(/\[(?:Remote|WFH)(?:\s+Days)?\]|\[Remote\s+Arrangement\]/gi, `${wfhDays} days remote per week`);
+
+    // Match PTO / Vacation days
+    text = text.replace(/\[(?:PTO|Vacation)(?:\s+Days)?\]|\[Vacation\s+days\]/gi, `${extraPto} additional days of PTO`);
+
+    return text;
+  })();
+
+  function handleCopy() {
+    navigator.clipboard.writeText(customizedText);
+    toast.success("Counter-offer copied to clipboard!");
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
   return (
     <Card title="Negotiation playbook">
-      <div>
-        <p className="text-sm font-medium text-ink mb-2">Talking points</p>
-        <ul className="list-disc pl-5 space-y-1 text-sm text-body">
-          {r.negotiation.talkingPoints.map((t, i) => (
-            <li key={i}>{t}</li>
-          ))}
-        </ul>
-      </div>
-      <div className="mt-4">
-        <p className="text-sm font-medium text-ink mb-2">Counter-offer template</p>
-        <p className="rounded-lg border border-ink/10 bg-cream/40 p-3 text-sm text-ink whitespace-pre-wrap font-mono">
-          {r.negotiation.counterOfferTemplate}
-        </p>
-      </div>
-      {r.negotiation.redLines.length > 0 && (
-        <div className="mt-4">
-          <p className="text-sm font-medium text-ink mb-2">Red lines</p>
-          <ul className="list-disc pl-5 space-y-1 text-sm text-body">
-            {r.negotiation.redLines.map((t, i) => (
-              <li key={i}>{t}</li>
-            ))}
-          </ul>
+      <div className="grid gap-6 md:grid-cols-3">
+        {/* Playbook context column */}
+        <div className="space-y-4 md:col-span-1 border-r border-ink/10 pr-4 print:border-r-0 print:pr-0 print:col-span-3">
+          <div>
+            <p className="text-sm font-semibold text-ink mb-2">Talking points</p>
+            <ul className="list-disc pl-5 space-y-1 text-sm text-body leading-relaxed">
+              {r.negotiation.talkingPoints.map((t, i) => (
+                <li key={i}>{t}</li>
+              ))}
+            </ul>
+          </div>
+          {r.negotiation.redLines.length > 0 && (
+            <div className="border-t border-ink/10 pt-4">
+              <p className="text-sm font-semibold text-ink mb-2">Red lines</p>
+              <ul className="list-disc pl-5 space-y-1 text-sm text-body leading-relaxed">
+                {r.negotiation.redLines.map((t, i) => (
+                  <li key={i} className="text-red-700">{t}</li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
-      )}
+
+        {/* Counter-offer customization column */}
+        <div className="space-y-4 md:col-span-2 print:col-span-3">
+          <div className="print:hidden rounded-xl border border-ink/10 bg-cream/40 p-4">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-ink/75 mb-3">Counter-Offer Customizer</h3>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-body mb-1">Target Base Salary</label>
+                <input
+                  type="text"
+                  value={targetSalary}
+                  onChange={(e) => setTargetSalary(e.target.value)}
+                  placeholder="$135,000 Base"
+                  className="w-full rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs text-ink focus:outline-none focus:ring-1 focus:ring-heading/40"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-body mb-1">WFH Days ({wfhDays}d)</label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="5"
+                    value={wfhDays}
+                    onChange={(e) => setWfhDays(Number(e.target.value))}
+                    className="w-full h-1 bg-ink/10 rounded-lg appearance-none cursor-pointer accent-ink"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-body mb-1">Extra PTO ({extraPto}d)</label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="15"
+                    value={extraPto}
+                    onChange={(e) => setExtraPto(Number(e.target.value))}
+                    className="w-full h-1 bg-ink/10 rounded-lg appearance-none cursor-pointer accent-ink"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div className="flex justify-between items-center mb-2">
+              <p className="text-sm font-semibold text-ink">Customized counter-offer email</p>
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="print:hidden inline-flex items-center gap-1.5 rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-cream hover:bg-ink-hover cursor-pointer transition-colors shadow-sm"
+              >
+                {copied ? <CheckCircle2 size={12} /> : <Download size={12} />}
+                {copied ? "Copied!" : "Copy template"}
+              </button>
+            </div>
+            <p className="rounded-lg border border-ink/10 bg-cream/20 p-4 text-xs sm:text-sm text-ink whitespace-pre-wrap font-mono leading-relaxed max-h-[300px] overflow-y-auto">
+              {customizedText}
+            </p>
+          </div>
+        </div>
+      </div>
     </Card>
   );
 }

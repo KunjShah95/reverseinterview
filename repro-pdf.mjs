@@ -4,7 +4,7 @@ import { chromium } from "playwright";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
-const URL = "http://localhost:5180";
+const URL = "http://localhost:5173";
 const REPORT_ID = "repro-pdf-1";
 const SAMPLE = {
   id: REPORT_ID,
@@ -26,20 +26,72 @@ const SAMPLE = {
     simulation: { status: "complete", startedAt: "2026-06-01T12:00:00.000Z", completedAt: "2026-06-01T12:00:01.000Z" },
     critic: { status: "complete", startedAt: "2026-06-01T12:00:00.000Z", completedAt: "2026-06-01T12:00:01.000Z" },
     orchestrator: { status: "complete", startedAt: "2026-06-01T12:00:00.000Z", completedAt: "2026-06-01T12:00:01.000Z" },
+    legal: { status: "complete", startedAt: "2026-06-01T12:00:00.000Z", completedAt: "2026-06-01T12:00:01.000Z" },
   },
   result: {
     company: "Real World Corp",
     roleTitle: "Senior Software Engineer",
     culture: { toxicityScore: 42, summary: "Some flagging phrases detected.", flags: [{ phrase: "rockstar", hiddenMeaning: "Unrealistic expectations.", severity: "medium" }] },
     burnout: { burnoutRisk: 55, overtimeProbability: 60, summary: "Elevated workload signals.", signals: ["Urgency language appears repeatedly."] },
-    salary: { verdict: "fair", marketRangeEstimate: "Likely near market.", confidence: "medium", reasoning: "Reasonable scope." },
+    salary: {
+      verdict: "fair",
+      marketRangeEstimate: "Likely near market.",
+      confidence: "medium",
+      reasoning: "Reasonable scope.",
+      equityDetails: {
+        optionsGranted: 15000,
+        strikePrice: 1.25,
+        estimatedPercentage: 0.15,
+        vestingSchedule: "4-year vesting, 1-year cliff"
+      }
+    },
     ghost: { ghostScore: 30, summary: "Hiring process looks coherent.", signals: ["Scope is defined."] },
     negotiation: { talkingPoints: ["Ask how success is defined in the first 90 days."], counterOfferTemplate: "Thanks again - I am excited.", redLines: ["Undefined scope with no success criteria."] },
     reverse: { questions: [{ q: "How does Real World Corp measure success?", why: "Turns vague expectations into concrete success criteria.", category: "Growth" }] },
-    lie: { mismatches: [{ claim: "Work-life balance", evidence: "Mentions on-call and urgent turnaround expectations.", confidence: "high" }], summary: "Internal tension." },
+    lie: {
+      mismatches: [{ claim: "Work-life balance", evidence: "Mentions on-call and urgent turnaround expectations.", confidence: "high" }],
+      discrepancies: [
+        {
+          category: "Location",
+          jdClaim: "Fully remote allowed",
+          chatClaim: "Usually remote, hybrid maybe",
+          contractClaim: "100% onsite in Seattle",
+          severity: "high",
+          assessment: "Location changed from fully remote to fully onsite in Seattle."
+        },
+        {
+          category: "Compensation",
+          jdClaim: "$150,000 - $180,000 base salary",
+          chatClaim: "$160,000 base discussed",
+          contractClaim: "$145,000 base offered",
+          severity: "medium",
+          assessment: "Final base salary offer is below the minimum posted on the job description."
+        }
+      ],
+      summary: "Internal tension and timeline mismatch."
+    },
     simulation: { phases: [{ label: "6 months in", narrative: "You are learning the real operating rhythm.", stress: 50, growth: 60, learning: 65 }], promotionProbability: 55, retentionProbability: 65 },
     critic: { unsupportedClaims: [], contradictions: [], confidenceWarnings: ["Heuristic fallback."], summary: "Local fallback." },
     orchestrator: { recommendation: "caution", verdict: "This deserves a careful follow-up before you commit.", truthScore: { transparency: 70, workLifeBalance: 55, careerGrowth: 65, hiringIntegrity: 72, compensationFairness: 60 }, topRisks: ["Workload signals are elevated."], topGreens: ["Scope is at least specific."] },
+    legal: {
+      clauses: [
+        {
+          clauseType: "IP Assignment",
+          extractedText: "All inventions and discoveries made during employment, whether on company time or personal time, belong to the company.",
+          riskRating: "high",
+          explanation: "Overbroad IP assignment clause claiming ownership over personal projects.",
+          mitigationStrategy: "Negotiate an exclusion list detailing pre-existing personal intellectual property."
+        },
+        {
+          clauseType: "Non-Compete",
+          extractedText: "Employee will not work for any competitor globally for a period of 12 months after termination.",
+          riskRating: "medium",
+          explanation: "Restricts post-employment opportunities; 12-month global scope is quite broad.",
+          mitigationStrategy: "Request reducing the duration to 6 months and limiting the geographic scope."
+        }
+      ],
+      summary: "Contains critical clauses that require careful review."
+    }
   },
 };
 
