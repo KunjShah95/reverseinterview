@@ -10,6 +10,11 @@ import type {
   SimulationAgent,
   CriticAgent,
   Orchestrator,
+  LegalAgent,
+  ManagerRadarAgent,
+  ManagerStyle,
+  ManagerRadarSignal,
+  Confidence,
 } from "./analysis-types";
 
 export type AnalysisInput = {
@@ -175,10 +180,16 @@ export async function runSalaryAgent(input: AnalysisInput): Promise<SalaryAgent>
     marketRangeEstimate: string;
     confidence: "low" | "medium" | "high";
     reasoning: string;
+    equityDetails?: {
+      optionsGranted?: number;
+      strikePrice?: number;
+      estimatedPercentage?: number;
+      vestingSchedule?: string;
+    };
   }>({
     toolName: "salaryAnalysis",
     toolDescription:
-      "Evaluate salary and compensation fairness from the job text and any additional context.",
+      "Evaluate salary, compensation fairness, and extract stock options/equity details from the job text.",
     parameters: {
       type: "object",
       properties: {
@@ -200,6 +211,16 @@ export async function runSalaryAgent(input: AnalysisInput): Promise<SalaryAgent>
           type: "string",
           description: "2-3 sentence explanation of the salary verdict",
         },
+        equityDetails: {
+          type: "object",
+          description: "Structured details about any stock options, RSUs, or equity mentioned in the text.",
+          properties: {
+            optionsGranted: { type: "number", description: "Number of options or shares granted, if explicitly specified." },
+            strikePrice: { type: "number", description: "The strike or exercise price of the options, if specified." },
+            estimatedPercentage: { type: "number", description: "Estimated equity percentage (e.g. 0.05 for 0.05%), if specified." },
+            vestingSchedule: { type: "string", description: "Description of the vesting schedule, e.g. '1-year cliff, 4-year monthly vesting'." }
+          }
+        }
       },
       required: ["verdict", "marketRangeEstimate", "confidence", "reasoning"],
     },
@@ -207,13 +228,13 @@ export async function runSalaryAgent(input: AnalysisInput): Promise<SalaryAgent>
       {
         role: "system",
         content: systemPrompt(
-          "Compensation Analyst",
+          "Compensation & Equity Analyst",
           `Analyze the job text for compensation signals:
 - Salary range transparency vs. vagueness
 - Whether stated salary matches role seniority expectations
 - Equity, bonus, and benefits quality
 - Location-based compensation context
-- Stock/options language quality
+- Stock/options language quality (extract optionsGranted, strikePrice, estimatedPercentage, and vestingSchedule if available)
 
 Use the provided offeredSalary, location, yearsExperience if supplied as additional context.
 
@@ -246,6 +267,7 @@ Base verdict ONLY on what the text and provided context supports.`,
     marketRangeEstimate: result.arguments.marketRangeEstimate,
     confidence: result.arguments.confidence,
     reasoning: result.arguments.reasoning,
+    equityDetails: result.arguments.equityDetails,
   };
 }
 
@@ -417,23 +439,33 @@ export async function runReverseAgent(input: AnalysisInput): Promise<ReverseAgen
 }
 
 export async function runLieAgent(input: AnalysisInput): Promise<LieAgent> {
+  const hasTimeline = !!(input.jobDescriptionText || input.recruiterChatText || input.offerLetterText);
+
   const result = await callStructured<{
     mismatches: Array<{
       claim: string;
       evidence: string;
       confidence: "low" | "medium" | "high";
     }>;
+    discrepancies?: Array<{
+      category: "Location" | "Compensation" | "Scope" | "Benefits" | "Other";
+      jdClaim?: string;
+      chatClaim?: string;
+      contractClaim?: string;
+      severity: "low" | "medium" | "high";
+      assessment: string;
+    }>;
     summary: string;
   }>({
     toolName: "claimVerification",
     toolDescription:
-      "Find contradictions, inconsistencies, and unsupported claims within the job text itself.",
+      "Find contradictions, inconsistencies, and unsupported claims within the job text or across the hiring timeline stages.",
     parameters: {
       type: "object",
       properties: {
         mismatches: {
           type: "array",
-          description: "Internal contradictions found in the text. Max 4.",
+          description: "Internal contradictions found within the main text itself. Max 4.",
           items: {
             type: "object",
             properties: {
@@ -447,7 +479,23 @@ export async function runLieAgent(input: AnalysisInput): Promise<LieAgent> {
             required: ["claim", "evidence", "confidence"],
           },
         },
-        summary: { type: "string", description: "1-2 sentence summary of findings" },
+        discrepancies: {
+          type: "array",
+          description: "Shifts and discrepancies between recruiting timeline stages (JD, Chat/Emails, and Offer/Contract). Max 5.",
+          items: {
+            type: "object",
+            properties: {
+              category: { type: "string", enum: ["Location", "Compensation", "Scope", "Benefits", "Other"] },
+              jdClaim: { type: "string", description: "What was stated in the Job Description, if applicable." },
+              chatClaim: { type: "string", description: "What was promised in recruiter chats/emails, if applicable." },
+              contractClaim: { type: "string", description: "What was written in the final offer letter/contract, if applicable." },
+              severity: { type: "string", enum: ["low", "medium", "high"] },
+              assessment: { type: "string", description: "Explain the shift or bait-and-switch details in plain terms." }
+            },
+            required: ["category", "severity", "assessment"]
+          }
+        },
+        summary: { type: "string", description: "1-2 sentence summary of contradictions or timeline discrepancies found." },
       },
       required: ["mismatches", "summary"],
     },
@@ -455,25 +503,111 @@ export async function runLieAgent(input: AnalysisInput): Promise<LieAgent> {
       {
         role: "system",
         content: systemPrompt(
-          "HR Claim Verifier / Lie Detector",
-          `Read the job text carefully and identify:
-- Statements that contradict each other within the same text
-- Claims that sound good but are undercut by other details
-- "Unlimited PTO" paired with high workload signals
-- "Work-life balance" paired with urgent/on-call language
-- "Flat hierarchy" paired with undefined decision-making
-- Vague promises paired with concrete demands
-- Any other internal inconsistencies
+          "HR Claim Verifier / Lie & Discrepancy Detector",
+          `Read the job texts and identify contradictions and timeline shifts.
+${
+  hasTimeline
+    ? `You have separate texts for:
+1. The Job Description
+2. Recruiter Emails/Chats
+3. The final Offer Letter/Contract
 
-Only flag contradictions that are genuinely present in the text. Do not assume or infer contradictions that aren't there. Return empty mismatches array if none found.`,
+Compare these documents chronologically. Look for:
+- "Bait-and-switch" shifts in location (e.g. Remote promised in JD, Hybrid or On-site in contract)
+- Compensation changes (e.g. $130k base discussed in email, $115k in contract)
+- Scope shifts (e.g. Senior role title, but contract says Junior or expands duties heavily without adjustment)
+- Benefit shifts (e.g. Unlimited PTO discussed, but contract specifies strict caps/limits)`
+    : `Find internal inconsistencies within the text (e.g., "work-life balance" vs "on-call", "unlimited PTO" vs "high burnout", etc.).`
+}
+
+Only flag discrepancies that are genuinely present. Return empty arrays if none found.`,
         ),
       },
-      { role: "user", content: userPrompt(input.sourceText) },
+      {
+        role: "user",
+        content: userPrompt(
+          input.sourceText,
+          hasTimeline
+            ? `TIMELINE DOCUMENTS TO CROSS-REFERENCE:
+1. Job Description:
+${input.jobDescriptionText || "(Not provided)"}
+
+2. Recruiter Emails/Chats:
+${input.recruiterChatText || "(Not provided)"}
+
+3. Final Offer Letter / Contract:
+${input.offerLetterText || "(Not provided)"}`
+            : undefined,
+        ),
+      },
     ],
   });
   return {
     mismatches: result.arguments.mismatches.slice(0, 4),
+    discrepancies: result.arguments.discrepancies?.slice(0, 5),
     summary: result.arguments.summary,
+  };
+}
+
+export async function runLegalAgent(input: AnalysisInput): Promise<LegalAgent> {
+  const result = await callStructured<{
+    clauses: Array<{
+      clauseType: "IP Assignment" | "Clawback" | "Non-Compete" | "Termination" | "Equity Vesting" | "Other";
+      extractedText: string;
+      riskRating: "low" | "medium" | "high";
+      explanation: string;
+      mitigationStrategy: string;
+    }>;
+    summary: string;
+  }>({
+    toolName: "legalTrapScanner",
+    toolDescription: "Scan the employment contract or offer letter text for predatory legal clauses and traps.",
+    parameters: {
+      type: "object",
+      properties: {
+        clauses: {
+          type: "array",
+          description: "Extracted legal clauses with their risk ratings and mitigation advice. Max 5.",
+          items: {
+            type: "object",
+            properties: {
+              clauseType: {
+                type: "string",
+                enum: ["IP Assignment", "Clawback", "Non-Compete", "Termination", "Equity Vesting", "Other"]
+              },
+              extractedText: { type: "string", description: "The raw text of the clause or sentence(s) of interest." },
+              riskRating: { type: "string", enum: ["low", "medium", "high"] },
+              explanation: { type: "string", description: "What this clause means in plain English, and why it is a trap or risk." },
+              mitigationStrategy: { type: "string", description: "How the candidate can negotiate or clarify this clause to protect themselves." }
+            },
+            required: ["clauseType", "extractedText", "riskRating", "explanation", "mitigationStrategy"]
+          }
+        },
+        summary: { type: "string", description: "1-2 sentence overall legal risk summary." }
+      },
+      required: ["clauses", "summary"]
+    },
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt(
+          "Legal Trap Scanner & Contract Auditor",
+          `Analyze the job text/offer letter for predatory or highly restrictive legal clauses:
+- IP Assignment: does it claim personal/off-hours projects or prior inventions?
+- Clawbacks: requirements to pay back signing bonuses, relocation, or training costs if leaving early.
+- Non-Compete: limits on future employment (duration, geography, scope).
+- Termination: notice period imbalances (e.g. they can fire immediately, but candidate must give 4 weeks) or at-will traps.
+- Equity Vesting: bad leaver provisions, lack of acceleration during acquisition.
+
+Keep assessments realistic and practical. Return empty clauses array if no legal traps are detected.`
+        )
+      },
+      { role: "user", content: userPrompt(input.sourceText) }
+    ]
+  });
+  return {
+    clauses: result.arguments.clauses.slice(0, 5),
+    summary: result.arguments.summary
   };
 }
 
@@ -572,6 +706,61 @@ export async function runSimulationAgent(input: AnalysisInput): Promise<Simulati
       0,
       Math.min(100, Math.round(result.arguments.retentionProbability)),
     ),
+  };
+}
+
+export async function runManagerRadarAgent(input: AnalysisInput): Promise<ManagerRadarAgent> {
+  const result = await callStructured<{
+    inferredStyle: string;
+    confidence: "low" | "medium" | "high";
+    signals: Array<{ phrase: string; implication: string; severity: "low" | "medium" | "high" }>;
+    autonomyScore: number;
+    communicationClarity: number;
+    redFlags: string[];
+    summary: string;
+  }>({
+    toolName: "managerRadar",
+    toolDescription: "Analyze job text to infer the hiring manager's likely management style.",
+    parameters: {
+      type: "object",
+      properties: {
+        inferredStyle: { type: "string", enum: ["micromanager", "hands-off", "delegator", "coach", "unknown"], description: "Most likely management style inferred from text signals" },
+        confidence: { type: "string", enum: ["low", "medium", "high"] },
+        signals: { type: "array", items: { type: "object", properties: { phrase: { type: "string" }, implication: { type: "string" }, severity: { type: "string", enum: ["low", "medium", "high"] } }, required: ["phrase", "implication", "severity"] }, description: "Specific phrases and what they imply about management. Max 4." },
+        autonomyScore: { type: "number", minimum: 0, maximum: 100, description: "How much autonomy the manager likely gives 0-100" },
+        communicationClarity: { type: "number", minimum: 0, maximum: 100, description: "How clearly the manager communicates expectations 0-100" },
+        redFlags: { type: "array", items: { type: "string" }, description: "Management-related red flags. Max 3." },
+        summary: { type: "string", description: "1-2 sentence summary of management style assessment" },
+      },
+      required: ["inferredStyle", "confidence", "signals", "autonomyScore", "communicationClarity", "redFlags", "summary"],
+    },
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt(
+          "Management Style Analyst",
+          `Analyze the job text for signals about the hiring manager's management style:
+- Micromanager signals: "detail-oriented", "tracking progress", "regular updates", "metrics-driven", "daily check-ins"
+- Hands-off signals: "self-starter", "independent", "minimal guidance", "figure it out"
+- Delegator signals: "delegate", "ownership", "accountable", "take the lead"
+- Coach signals: "mentorship", "growth", "develop your skills", "guidance", "career development"
+- Communication clarity: specific well-defined scope vs. vague open-ended expectations
+- Red flags: lack of defined expectations, contradictory signals, overly tight control language
+
+Score autonomyScore and communicationClarity 0-100 based ONLY on evidence in the text.`,
+        ),
+      },
+      { role: "user", content: userPrompt(input.sourceText) },
+    ],
+  });
+  return {
+    inferredStyle: result.arguments.inferredStyle as ManagerStyle,
+    confidence: result.arguments.confidence as Confidence,
+    signals: (result.arguments.signals as ManagerRadarSignal[]).slice(0, 4),
+    autonomyScore: Math.max(0, Math.min(100, Math.round(result.arguments.autonomyScore))),
+    communicationClarity: Math.max(0, Math.min(100, Math.round(result.arguments.communicationClarity))),
+    redFlags: (result.arguments.redFlags as string[]).slice(0, 3),
+    summary: result.arguments.summary,
   };
 }
 
