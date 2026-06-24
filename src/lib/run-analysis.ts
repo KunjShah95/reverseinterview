@@ -4,6 +4,7 @@ import type {
   AnalysisProgress,
   PartialAnalysisResult,
   CriticAgent,
+  PreliminaryResponse,
 } from "./analysis-types";
 import type { AnalysisInput } from "./agents.server";
 import {
@@ -15,6 +16,9 @@ import {
   runReverseAgent,
   runLieAgent,
   runSimulationAgent,
+  runManagerRadarAgent,
+  runPowerDynamicsAgent,
+  runTeamChemistryAgent,
   runCriticAgent,
   runOrchestratorAgent,
 } from "./agents.server";
@@ -29,6 +33,11 @@ export type RunProgress = {
   reverse: "pending" | "running" | "complete" | "failed" | "skipped";
   lie: "pending" | "running" | "complete" | "failed" | "skipped";
   simulation: "pending" | "running" | "complete" | "failed" | "skipped";
+  legal: "pending" | "running" | "complete" | "failed" | "skipped";
+  managerRadar: "pending" | "running" | "complete" | "failed" | "skipped";
+  powerDynamics: "pending" | "running" | "complete" | "failed" | "skipped";
+  teamChemistry: "pending" | "running" | "complete" | "failed" | "skipped";
+  companyDeepDive: "pending" | "running" | "complete" | "failed" | "skipped";
   critic: "pending" | "running" | "complete" | "failed" | "skipped";
   orchestrator: "pending" | "running" | "complete" | "failed" | "skipped";
 };
@@ -38,6 +47,7 @@ type RunStatus = {
   error?: string;
   progress: RunProgress;
   result?: PartialAnalysisResult;
+  preliminary?: PreliminaryResponse;
 };
 
 function resetProgress(): RunProgress {
@@ -50,6 +60,11 @@ function resetProgress(): RunProgress {
     reverse: "pending",
     lie: "pending",
     simulation: "pending",
+    legal: "pending",
+    managerRadar: "pending",
+    powerDynamics: "pending",
+    teamChemistry: "pending",
+    companyDeepDive: "pending",
     critic: "pending",
     orchestrator: "pending",
   };
@@ -93,6 +108,9 @@ export const startAnalysis = createServerFn({ method: "POST" })
       offeredSalary: z.string().optional(),
       location: z.string().optional(),
       yearsExperience: z.string().optional(),
+      jobDescriptionText: z.string().optional(),
+      recruiterChatText: z.string().optional(),
+      offerLetterText: z.string().optional(),
     }),
   )
   .handler(async ({ data }) => {
@@ -110,6 +128,9 @@ export const startAnalysis = createServerFn({ method: "POST" })
       offeredSalary: data.offeredSalary,
       location: data.location,
       yearsExperience: data.yearsExperience,
+      jobDescriptionText: data.jobDescriptionText,
+      recruiterChatText: data.recruiterChatText,
+      offerLetterText: data.offerLetterText,
     };
 
     const persistPatch = async (patch: SwarmPatch) => {
@@ -149,6 +170,9 @@ export const startAnalysis = createServerFn({ method: "POST" })
       { id: "reverse" as const, run: runReverseAgent },
       { id: "lie" as const, run: runLieAgent },
       { id: "simulation" as const, run: runSimulationAgent },
+      { id: "managerRadar" as const, run: runManagerRadarAgent },
+      { id: "powerDynamics" as const, run: runPowerDynamicsAgent },
+      { id: "teamChemistry" as const, run: runTeamChemistryAgent },
     ];
 
     const criticAgent = {
