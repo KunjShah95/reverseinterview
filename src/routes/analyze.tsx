@@ -172,7 +172,7 @@ function AnalyzePage() {
     setDocType(null);
   }
 
-  async function handlePdf(file: File) {
+  async function handlePdf(file: File, stageOverride?: "jd" | "chat" | "offer") {
     if (file.size > 18 * 1024 * 1024) {
       toast.error("PDF is too large (max 18MB).");
       return;
@@ -240,11 +240,12 @@ function AnalyzePage() {
           "Pulled the PDF apart but found almost no text. It's likely scanned — try the Screenshot tab instead.",
         );
       } else {
-        if (activeUploadStage === "jd") {
+        const targetStage = stageOverride || activeUploadStage;
+        if (targetStage === "jd") {
           setJdText(merged);
-        } else if (activeUploadStage === "chat") {
+        } else if (targetStage === "chat") {
           setChatText(merged);
-        } else if (activeUploadStage === "offer") {
+        } else if (targetStage === "offer") {
           setOfferText(merged);
         } else {
           setText(merged);
@@ -272,7 +273,7 @@ function AnalyzePage() {
     }
   }
 
-  async function handleImage(file: File) {
+  async function handleImage(file: File, stageOverride?: "jd" | "chat" | "offer") {
     if (file.size > 12 * 1024 * 1024) {
       toast.error("Image is too large (max 12MB).");
       return;
@@ -295,11 +296,12 @@ function AnalyzePage() {
       if (extracted.trim().length < 20) {
         toast.error("No readable text found in the image.");
       } else {
-        if (activeUploadStage === "jd") {
+        const targetStage = stageOverride || activeUploadStage;
+        if (targetStage === "jd") {
           setJdText(extracted);
-        } else if (activeUploadStage === "chat") {
+        } else if (targetStage === "chat") {
           setChatText(extracted);
-        } else if (activeUploadStage === "offer") {
+        } else if (targetStage === "offer") {
           setOfferText(extracted);
         } else {
           setText(extracted);
@@ -393,6 +395,8 @@ function AnalyzePage() {
           jobDescriptionText: mode === "timeline" ? jdText || undefined : undefined,
           recruiterChatText: mode === "timeline" ? chatText || undefined : undefined,
           offerLetterText: mode === "timeline" ? offerText || undefined : undefined,
+          email: email || undefined,
+          emailConsent: emailConsent || undefined,
         },
       });
 
@@ -638,9 +642,9 @@ function AnalyzePage() {
                           if (f) {
                             setActiveUploadStage(stage.key);
                             if (f.type === "application/pdf") {
-                              handlePdf(f);
+                              handlePdf(f, stage.key);
                             } else {
-                              handleImage(f);
+                              handleImage(f, stage.key);
                             }
                           }
                         }}
@@ -846,7 +850,7 @@ function AnalyzePage() {
                   className="h-full rounded-full transition-all duration-500"
                   style={{
                     width: `${preliminary.vibeScore}%`,
-                    backgroundColor: preliminary.vibeScore >= 60 ? "#22c55e" : preliminary.vibeScore >= 35 ? "#eab308" : "#ef4444",
+                    backgroundColor: preliminary.vibeScore >= 60 ? "var(--safe)" : preliminary.vibeScore >= 35 ? "var(--caution)" : "var(--danger)",
                   }}
                 />
               </div>

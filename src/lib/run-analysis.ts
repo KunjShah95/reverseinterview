@@ -19,6 +19,7 @@ import {
   runManagerRadarAgent,
   runPowerDynamicsAgent,
   runTeamChemistryAgent,
+  runLegalAgent,
   runCriticAgent,
   runOrchestratorAgent,
 } from "./agents.server";
@@ -188,6 +189,7 @@ export const startAnalysis = createServerFn({ method: "POST" })
       { id: "managerRadar" as const, run: runManagerRadarAgent },
       { id: "powerDynamics" as const, run: runPowerDynamicsAgent },
       { id: "teamChemistry" as const, run: runTeamChemistryAgent },
+      { id: "legal" as const, run: runLegalAgent },
     ];
 
     const criticAgent = {
@@ -255,7 +257,8 @@ export const startAnalysis = createServerFn({ method: "POST" })
             doc.text(`Verdict: ${result.orchestrator.recommendation}`, 20, 50);
             doc.text(result.orchestrator.verdict, 20, 60);
           }
-          pdfBase64 = btoa(String.fromCharCode(...new Uint8Array(doc.output("arraybuffer"))));
+          const pdfBuffer = Buffer.from(doc.output("arraybuffer"));
+          pdfBase64 = pdfBuffer.toString("base64");
         } catch (err) {
           console.error("PDF generation failed:", err);
         }
@@ -265,13 +268,16 @@ export const startAnalysis = createServerFn({ method: "POST" })
 
         // Wave 2: Company deep dive (only if we have a company name)
         if (result.company && result.company !== "Unknown Company") {
+          if (current) current.progress.companyDeepDive = "running";
           try {
             const deepDive = await runCompanyDeepDive(result.company);
-            if (current.result) {
+            if (current?.result) {
               current.result = { ...current.result, companyDeepDive: deepDive };
             }
+            if (current) current.progress.companyDeepDive = "complete";
             await sendReportEmail(data.email!, result, deepDive, undefined);
           } catch (err) {
+            if (current) current.progress.companyDeepDive = "failed";
             console.error("Company deep dive failed:", err);
           }
         }

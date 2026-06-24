@@ -1665,7 +1665,7 @@ function ManagerRadarCard({ r, progress }: { r: PartialAnalysisResult; progress:
         <h2 className="font-display text-xl font-semibold text-ink">Manager Radar</h2>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-        <MetricCard label="Style" value={r.managerRadar.inferredStyle.replace("-", " ")} />
+        <MetricCard label="Style" value={r.managerRadar.inferredStyle.replace(/-/g, " ")} />
         <MetricCard label="Autonomy" value={`${r.managerRadar.autonomyScore}/100`} />
         <MetricCard label="Clarity" value={`${r.managerRadar.communicationClarity}/100`} />
         <MetricCard label="Confidence" value={r.managerRadar.confidence} />
@@ -1744,7 +1744,7 @@ function TeamChemistryCard({ r, progress }: { r: PartialAnalysisResult; progress
         <h2 className="font-display text-xl font-semibold text-ink">Team Chemistry</h2>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-        <MetricCard label="Archetype" value={r.teamChemistry.teamArchetype.replace("-", " ")} />
+        <MetricCard label="Archetype" value={r.teamChemistry.teamArchetype.replace(/-/g, " ")} />
         <MetricCard label="Meetings" value={r.teamChemistry.meetingCulture} />
         <MetricCard label="Cross-functionality" value={`${r.teamChemistry.crossFunctionality}/100`} />
         <MetricCard label="Support" value={`${r.teamChemistry.supportStructure}/100`} />
@@ -1785,7 +1785,7 @@ function CompanyDeepDiveCard({ r, progress }: { r: PartialAnalysisResult; progre
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
         <MetricCard label="Industry" value={r.companyDeepDive.industry} />
-        <MetricCard label="Stage" value={r.companyDeepDive.stage.replace("-", " ")} />
+        <MetricCard label="Stage" value={r.companyDeepDive.stage.replace(/-/g, " ")} />
         <MetricCard label="Growth trajectory" value={r.companyDeepDive.growthTrajectory} />
       </div>
       {r.companyDeepDive.fundingStatus && (
