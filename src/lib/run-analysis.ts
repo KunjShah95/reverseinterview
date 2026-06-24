@@ -23,6 +23,7 @@ import {
   runOrchestratorAgent,
 } from "./agents.server";
 import { runSwarmJob, type SwarmPatch } from "./analysis-swarm.server";
+import { runPreliminaryAnalysis } from "./preliminary.server";
 
 export type RunProgress = {
   culture: "pending" | "running" | "complete" | "failed" | "skipped";
@@ -119,6 +120,16 @@ export const startAnalysis = createServerFn({ method: "POST" })
     progressStore.set(analysisId, {
       status: "running",
       progress: resetProgress(),
+    });
+
+    // Run preliminary analysis (fast first-pass)
+    runPreliminaryAnalysis(data.sourceText).then((preliminary) => {
+      const current = progressStore.get(analysisId);
+      if (current) {
+        current.preliminary = preliminary;
+      }
+    }).catch(() => {
+      // Non-blocking — preliminary is optional
     });
 
     const input: AnalysisInput = {
@@ -232,6 +243,7 @@ export const pollAnalysis = createServerFn({ method: "POST" })
         error: "Analysis not found",
         progress: resetProgress(),
         result: null,
+        preliminary: null,
       };
     }
     return {
@@ -239,5 +251,6 @@ export const pollAnalysis = createServerFn({ method: "POST" })
       error: cached.error,
       progress: cached.progress,
       result: cached.result ?? null,
+      preliminary: cached.preliminary ?? null,
     };
   });
