@@ -11,6 +11,9 @@ import {
   Loader2,
   X,
   Printer,
+  UserSearch,
+  Siren,
+  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 import SiteNav from "@/components/SiteNav";
@@ -36,8 +39,12 @@ const AGENT_LABELS: { id: AgentId; label: string }[] = [
   { id: "reverse", label: "Reverse interview" },
   { id: "lie", label: "Claim verifier" },
   { id: "simulation", label: "Career simulation" },
+  { id: "legal", label: "Legal trap scan" },
   { id: "critic", label: "Critic" },
   { id: "orchestrator", label: "Final verdict" },
+  { id: "managerRadar", label: "Manager radar" },
+  { id: "powerDynamics", label: "Power dynamics" },
+  { id: "teamChemistry", label: "Team chemistry" },
 ];
 
 const ACTIVE_STATUSES: AnalysisStatus[] = ["queued", "running"];
@@ -426,7 +433,12 @@ function renderLieDetector(pdf: jsPDF, r: PartialAnalysisResult, startY: number,
   if (r.lie.summary) {
     y = wrapText(pdf, r.lie.summary, layout.mx, y, layout.cw, 10, PDF_COLORS.body);
   }
+  
   if (r.lie.mismatches?.length) {
+    pdf.setFontSize(11);
+    pdf.setTextColor(...PDF_COLORS.ink);
+    pdf.text("Mismatches & Claims", layout.mx, y);
+    y += 14;
     for (const m of r.lie.mismatches) {
       y = pageBreak(pdf, y, 24, layout);
       pdf.setDrawColor(...PDF_COLORS.border);
@@ -445,9 +457,48 @@ function renderLieDetector(pdf: jsPDF, r: PartialAnalysisResult, startY: number,
       }
       y += 4;
     }
-  } else {
-    y = wrapText(pdf, "No claims to verify.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
   }
+
+  if (r.lie.discrepancies?.length) {
+    y = pageBreak(pdf, y, 24, layout);
+    pdf.setFontSize(11);
+    pdf.setTextColor(...PDF_COLORS.ink);
+    pdf.text("Bait-and-Switch Timeline Audit", layout.mx, y);
+    y += 14;
+    
+    for (const d of r.lie.discrepancies) {
+      y = pageBreak(pdf, y, 80, layout);
+      const startBoxY = y - 8;
+      
+      pdf.setFontSize(9);
+      pdf.setTextColor(...PDF_COLORS.muted);
+      const sevLabel = `Severity: ${d.severity.toUpperCase()}`;
+      pdf.text(`${d.category}  |  ${sevLabel}`, layout.mx + 8, y);
+      y += 14;
+      
+      y = wrapText(pdf, d.assessment, layout.mx + 8, y, layout.cw - 16, 9.5, PDF_COLORS.ink);
+      
+      if (d.jdClaim) {
+        y = wrapText(pdf, `Stage 1 JD: "${d.jdClaim}"`, layout.mx + 16, y, layout.cw - 24, 8.5, PDF_COLORS.body);
+      }
+      if (d.chatClaim) {
+        y = wrapText(pdf, `Stage 2 Chats: "${d.chatClaim}"`, layout.mx + 16, y, layout.cw - 24, 8.5, PDF_COLORS.body);
+      }
+      if (d.contractClaim) {
+        y = wrapText(pdf, `Stage 3 Contract: "${d.contractClaim}"`, layout.mx + 16, y, layout.cw - 24, 8.5, PDF_COLORS.body);
+      }
+      
+      const endBoxY = y;
+      pdf.setDrawColor(...PDF_COLORS.border);
+      pdf.roundedRect(layout.mx, startBoxY, layout.cw, endBoxY - startBoxY, 4, 4, "D");
+      y += 10;
+    }
+  }
+
+  if (!r.lie.mismatches?.length && !r.lie.discrepancies?.length) {
+    y = wrapText(pdf, "No claims or discrepancies to verify.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+  }
+  
   return y + SEC_GAP;
 }
 
@@ -628,6 +679,102 @@ function renderNegotiation(pdf: jsPDF, r: PartialAnalysisResult, startY: number,
   }
   return y + SEC_GAP;
 }
+
+function renderEquity(pdf: jsPDF, r: PartialAnalysisResult, startY: number, layout: PdfLayout): number {
+  const eq = r.salary?.equityDetails;
+  if (!eq) return startY;
+  
+  let y = pageBreak(pdf, startY, 30, layout);
+  y = secTitle(pdf, y, "Equity Options Projection");
+  
+  y = pageBreak(pdf, y, 70, layout);
+  const startBoxY = y - 8;
+  
+  const optionsGranted = eq.optionsGranted ? eq.optionsGranted.toLocaleString() : "N/A";
+  const strikePrice = eq.strikePrice ? `$${eq.strikePrice.toFixed(2)}` : "N/A";
+  const estimatedPercentage = eq.estimatedPercentage ? `${eq.estimatedPercentage}%` : "N/A";
+  const vestingSchedule = eq.vestingSchedule || "N/A";
+  
+  pdf.setFontSize(9.5);
+  pdf.setTextColor(...PDF_COLORS.ink);
+  
+  const labels = [
+    { label: "Options Granted:", val: optionsGranted },
+    { label: "Strike Price:", val: strikePrice },
+    { label: "Estimated Ownership %:", val: estimatedPercentage },
+    { label: "Vesting Schedule:", val: vestingSchedule }
+  ];
+  
+  for (const item of labels) {
+    pdf.setFont("helvetica", "bold");
+    pdf.text(item.label, layout.mx + 8, y);
+    pdf.setFont("helvetica", "normal");
+    pdf.text(sanitizeForDefaultFont(item.val), layout.mx + 160, y);
+    y += 14;
+  }
+  
+  const endBoxY = y;
+  pdf.setDrawColor(...PDF_COLORS.border);
+  pdf.roundedRect(layout.mx, startBoxY, layout.cw, endBoxY - startBoxY, 4, 4, "D");
+  
+  return y + SEC_GAP;
+}
+
+function renderLegal(pdf: jsPDF, r: PartialAnalysisResult, startY: number, layout: PdfLayout): number {
+  let y = pageBreak(pdf, startY, 30, layout);
+  y = secTitle(pdf, y, "Legal Trap Scan");
+  if (!r.legal) {
+    y = wrapText(pdf, "Legal scanner agent not yet complete.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+    return y + SEC_GAP;
+  }
+  if (r.legal.summary) {
+    y = wrapText(pdf, r.legal.summary, layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+  }
+  if (r.legal.clauses?.length) {
+    for (const c of r.legal.clauses) {
+      y = pageBreak(pdf, y, 120, layout);
+      const startBoxY = y - 8;
+      
+      pdf.setFontSize(10);
+      pdf.setTextColor(...PDF_COLORS.ink);
+      pdf.setFont("helvetica", "bold");
+      pdf.text(sanitizeForDefaultFont(c.clauseType.toUpperCase()), layout.mx + 8, y);
+      pdf.setFont("helvetica", "normal");
+      
+      const riskText = `Risk: ${c.riskRating.toUpperCase()}`;
+      pdf.setFontSize(9);
+      const riskColor = c.riskRating === "high" ? PDF_COLORS.danger : c.riskRating === "medium" ? PDF_COLORS.caution : PDF_COLORS.safe;
+      pdf.setTextColor(...riskColor);
+      pdf.text(riskText, layout.mx + layout.cw - 8, y, { align: "right" });
+      y += 14;
+      
+      pdf.setFontSize(8.5);
+      pdf.setTextColor(...PDF_COLORS.body);
+      const textLines = pdf.splitTextToSize(sanitizeForDefaultFont(`"${c.extractedText}"`), layout.cw - 24);
+      const textBoxH = textLines.length * 11 + 10;
+      
+      pdf.setFillColor(...PDF_COLORS.cream);
+      pdf.roundedRect(layout.mx + 8, y - 6, layout.cw - 16, textBoxH, 2, 2, "F");
+      
+      textLines.forEach((line: string, idx: number) => {
+        pdf.text(line, layout.mx + 12, y + idx * 11);
+      });
+      y += textBoxH + 8;
+      
+      y = wrapText(pdf, `Warning: ${c.explanation}`, layout.mx + 8, y, layout.cw - 16, 9, PDF_COLORS.ink);
+      y = wrapText(pdf, `Strategy: ${c.mitigationStrategy}`, layout.mx + 8, y, layout.cw - 16, 9, PDF_COLORS.body);
+      
+      const endBoxY = y;
+      pdf.setDrawColor(...PDF_COLORS.border);
+      pdf.roundedRect(layout.mx, startBoxY, layout.cw, endBoxY - startBoxY, 4, 4, "D");
+      y += 12;
+    }
+  } else {
+    y = wrapText(pdf, "No critical legal traps detected.", layout.mx, y, layout.cw, 10, PDF_COLORS.body);
+  }
+  return y + SEC_GAP;
+}
+
 
 function renderDisclaimer(pdf: jsPDF, startY: number, layout: PdfLayout): number {
   let y = pageBreak(pdf, startY, 20, layout);
@@ -821,7 +968,9 @@ function ReportPage() {
       if (r.culture) y = renderCulture(pdf, r, y, layout);
       if (r.burnout || r.ghost) y = renderBurnoutGhost(pdf, r, y, layout);
       if (r.salary) y = renderSalary(pdf, r, y, layout);
+      if (r.salary?.equityDetails) y = renderEquity(pdf, r, y, layout);
       if (r.lie) y = renderLieDetector(pdf, r, y, layout);
+      if (r.legal) y = renderLegal(pdf, r, y, layout);
       if (r.reverse) y = renderReverseQuestions(pdf, r, y, layout);
       if (r.simulation) y = renderSimulation(pdf, r, y, layout);
       if (r.critic) y = renderCritic(pdf, r, y, layout);
@@ -907,8 +1056,16 @@ function ReportPage() {
           <div data-section="salary" className="print:break-inside-avoid">
             <SalaryCard r={r} progress={progress} />
           </div>
+          {r.salary?.equityDetails && (
+            <div data-section="equity-simulator" className="print:break-inside-avoid">
+              <EquitySimulatorCard r={r} />
+            </div>
+          )}
           <div data-section="lie-detector" className="print:break-inside-avoid">
             <LieDetectorCard r={r} progress={progress} />
+          </div>
+          <div data-section="legal-traps" className="print:break-inside-avoid">
+            <LegalTrapCard r={r} progress={progress} />
           </div>
           <div data-section="reverse-questions" className="print:break-inside-avoid">
             <ReverseQuestionsCard r={r} progress={progress} />
@@ -921,6 +1078,15 @@ function ReportPage() {
           </div>
           <div data-section="negotiation" className="print:break-inside-avoid">
             <NegotiationCard r={r} progress={progress} />
+          </div>
+          <div data-section="manager-radar" className="print:break-inside-avoid">
+            <ManagerRadarCard r={r} progress={progress} />
+          </div>
+          <div data-section="power-dynamics" className="print:break-inside-avoid">
+            <PowerDynamicsCard r={r} progress={progress} />
+          </div>
+          <div data-section="team-chemistry" className="print:break-inside-avoid">
+            <TeamChemistryCard r={r} progress={progress} />
           </div>
           <div data-section="disclaimer">
             <p className="text-xs text-body/70 text-center pt-6">
@@ -1239,15 +1405,15 @@ function LieDetectorCard({
   if (!r.lie) {
     return <SectionFallback title="HR claim verification" progress={progress.lie} />;
   }
-  if (!r.lie.mismatches.length) return null;
+  if (!r.lie.mismatches.length && !r.lie.discrepancies?.length) return null;
   return (
     <Card title="HR claim verification" subtitle={r.lie.summary}>
-      <div className="space-y-3">
+      <div className="space-y-4">
         {r.lie.mismatches.map((m, i) => (
           <div key={i} className="rounded-lg border border-ink/10 bg-cream/50 p-3">
             <div className="text-sm">
               <p className="text-ink">
-                <span className="font-medium">Claim:</span> "{m.claim}"
+                <span className="font-medium text-ink">Claim:</span> "{m.claim}"
               </p>
               <p className="mt-1 text-body">
                 <span className="font-medium text-ink">Evidence:</span> {m.evidence}
@@ -1256,6 +1422,48 @@ function LieDetectorCard({
             </div>
           </div>
         ))}
+
+        {r.lie.discrepancies && r.lie.discrepancies.length > 0 && (
+          <div className="mt-6 border-t border-ink/10 pt-6">
+            <p className="text-sm font-semibold text-ink mb-4">Bait-and-Switch Timeline Audit</p>
+            <div className="space-y-6 relative pl-6 border-l-2 border-ink/15 ml-3">
+              {r.lie.discrepancies.map((d, idx) => (
+                <div key={idx} className="relative group">
+                  <span className={`absolute -left-[31px] top-1.5 rounded-full w-4 h-4 border-2 border-white flex items-center justify-center ${
+                    d.severity === "high" ? "bg-red-500" : d.severity === "medium" ? "bg-yellow-500" : "bg-green-500"
+                  }`} />
+                  <div className="rounded-xl border border-ink/10 bg-cream/10 p-4">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-ink/75 bg-cream/70 rounded-full px-2 py-0.5">{d.category}</span>
+                      <SeverityChip s={d.severity} />
+                    </div>
+                    <p className="text-sm text-ink/90 font-medium mb-3">{d.assessment}</p>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                      {d.jdClaim && (
+                        <div className="rounded-lg bg-white border border-ink/5 p-2.5">
+                          <span className="font-semibold text-body block mb-1 text-[10px] uppercase">Stage 1: JD</span>
+                          <span className="italic text-ink">"{d.jdClaim}"</span>
+                        </div>
+                      )}
+                      {d.chatClaim && (
+                        <div className="rounded-lg bg-white border border-ink/5 p-2.5">
+                          <span className="font-semibold text-body block mb-1 text-[10px] uppercase">Stage 2: Chats</span>
+                          <span className="italic text-ink">"{d.chatClaim}"</span>
+                        </div>
+                      )}
+                      {d.contractClaim && (
+                        <div className="rounded-lg bg-white border border-ink/5 p-2.5">
+                          <span className="font-semibold text-body block mb-1 text-[10px] uppercase">Stage 3: Contract</span>
+                          <span className="italic text-ink">"{d.contractClaim}"</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </Card>
   );
@@ -1433,6 +1641,134 @@ function NegotiationCard({
   );
 }
 
+function MetricCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-ink/10 bg-cream/40 p-3">
+      <p className="text-xs text-body">{label}</p>
+      <p className="mt-1 font-display text-2xl text-ink capitalize">{value}</p>
+    </div>
+  );
+}
+
+function ManagerRadarCard({ r, progress }: { r: PartialAnalysisResult; progress: AnalysisProgress }) {
+  if (!r.managerRadar) {
+    return <SectionFallback title="Manager radar" progress={progress.managerRadar} />;
+  }
+  return (
+    <section className="rounded-2xl border border-ink/10 bg-white p-6 shadow-sm">
+      <div className="flex items-center gap-2 mb-4">
+        <UserSearch size={18} className="text-heading" />
+        <h2 className="font-display text-xl font-semibold text-ink">Manager Radar</h2>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+        <MetricCard label="Style" value={r.managerRadar.inferredStyle.replace("-", " ")} />
+        <MetricCard label="Autonomy" value={`${r.managerRadar.autonomyScore}/100`} />
+        <MetricCard label="Clarity" value={`${r.managerRadar.communicationClarity}/100`} />
+        <MetricCard label="Confidence" value={r.managerRadar.confidence} />
+      </div>
+      {r.managerRadar.signals.length > 0 && (
+        <div className="space-y-2 mb-3">
+          <p className="text-sm font-medium text-ink/70">Signals</p>
+          {r.managerRadar.signals.map((s, i) => (
+            <div key={i} className="rounded-lg bg-cream/60 px-3 py-2 text-sm">
+              <span className="font-medium text-ink">&quot;{s.phrase}&quot;</span>
+              <span className="text-body"> — {s.implication}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {r.managerRadar.redFlags.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-red-700">Red flags</p>
+          {r.managerRadar.redFlags.map((f, i) => (
+            <p key={i} className="flex items-start gap-2 text-sm"><AlertTriangle size={14} className="shrink-0 mt-0.5 text-red-600" />{f}</p>
+          ))}
+        </div>
+      )}
+      <p className="mt-3 text-sm text-body">{r.managerRadar.summary}</p>
+    </section>
+  );
+}
+
+function PowerDynamicsCard({ r, progress }: { r: PartialAnalysisResult; progress: AnalysisProgress }) {
+  if (!r.powerDynamics) {
+    return <SectionFallback title="Power dynamics" progress={progress.powerDynamics} />;
+  }
+  return (
+    <section className="rounded-2xl border border-ink/10 bg-white p-6 shadow-sm">
+      <div className="flex items-center gap-2 mb-4">
+        <Siren size={18} className="text-heading" />
+        <h2 className="font-display text-xl font-semibold text-ink">Power Dynamics</h2>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
+        <MetricCard label="Power score" value={`${r.powerDynamics.powerScore}/100`} />
+        <MetricCard label="Gaslighting index" value={`${r.powerDynamics.gaslightingIndex}/100`} />
+      </div>
+      {r.powerDynamics.manipulationSignals.length > 0 && (
+        <div className="space-y-2 mb-3">
+          <p className="text-sm font-medium text-ink/70">Manipulation signals</p>
+          {r.powerDynamics.manipulationSignals.map((s, i) => (
+            <div key={i} className={`rounded-lg px-3 py-2 text-sm ${s.severity === "high" ? "bg-red-50 border border-red-200" : "bg-cream/60"}`}>
+              <p className="font-medium text-ink">{s.technique}</p>
+              <p className="text-body mt-0.5">&quot;{s.excerpt}&quot;</p>
+              <p className="text-body/80 mt-0.5">{s.explanation}</p>
+            </div>
+          ))}
+        </div>
+      )}
+      {r.powerDynamics.respectMarkers.length > 0 && (
+        <div className="space-y-1 mb-3">
+          <p className="text-sm font-medium text-green-700">Respect markers</p>
+          {r.powerDynamics.respectMarkers.map((m, i) => (
+            <p key={i} className="flex items-start gap-2 text-sm text-green-800"><CheckCircle2 size={14} className="shrink-0 mt-0.5" />{m}</p>
+          ))}
+        </div>
+      )}
+      <p className="text-sm text-body">{r.powerDynamics.summary}</p>
+    </section>
+  );
+}
+
+function TeamChemistryCard({ r, progress }: { r: PartialAnalysisResult; progress: AnalysisProgress }) {
+  if (!r.teamChemistry) {
+    return <SectionFallback title="Team chemistry" progress={progress.teamChemistry} />;
+  }
+  return (
+    <section className="rounded-2xl border border-ink/10 bg-white p-6 shadow-sm">
+      <div className="flex items-center gap-2 mb-4">
+        <Users size={18} className="text-heading" />
+        <h2 className="font-display text-xl font-semibold text-ink">Team Chemistry</h2>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+        <MetricCard label="Archetype" value={r.teamChemistry.teamArchetype.replace("-", " ")} />
+        <MetricCard label="Meetings" value={r.teamChemistry.meetingCulture} />
+        <MetricCard label="Cross-functionality" value={`${r.teamChemistry.crossFunctionality}/100`} />
+        <MetricCard label="Support" value={`${r.teamChemistry.supportStructure}/100`} />
+      </div>
+      <div className="mb-3">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-sm font-medium text-ink/70">Team health</span>
+          <span className="text-sm font-semibold text-ink">{r.teamChemistry.teamHealthScore}/100</span>
+        </div>
+        <div className="h-2 rounded-full bg-ink/10 overflow-hidden">
+          <div className="h-full rounded-full transition-all" style={{ width: `${r.teamChemistry.teamHealthScore}%`, backgroundColor: "var(--heading-accent)" }} />
+        </div>
+      </div>
+      {r.teamChemistry.signals.length > 0 && (
+        <div className="space-y-2">
+          {r.teamChemistry.signals.map((s, i) => (
+            <div key={i} className="rounded-lg bg-cream/60 px-3 py-2 text-sm">
+              <span className="font-medium text-ink">&quot;{s.phrase}&quot;</span>
+              <span className="text-body"> — {s.implication}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="mt-3 text-sm text-body">{r.teamChemistry.summary}</p>
+    </section>
+  );
+}
+
 function AgentProgressPanel({
   progress,
   status,
@@ -1603,5 +1939,190 @@ function List({ title, items, kind }: { title: string; items: string[]; kind: "r
         ))}
       </ul>
     </div>
+  );
+}
+
+function LegalTrapCard({ r, progress }: { r: PartialAnalysisResult; progress: AnalysisProgress }) {
+  if (!r.legal) {
+    return <SectionFallback title="Legal trap scan" progress={progress.legal} />;
+  }
+  return (
+    <Card title="Legal trap scan" subtitle={r.legal.summary}>
+      <div className="space-y-4">
+        {r.legal.clauses.length === 0 && (
+          <p className="text-sm text-body">No critical legal traps detected in the parsed text.</p>
+        )}
+        {r.legal.clauses.map((c, i) => (
+          <div key={i} className="rounded-xl border border-ink/10 bg-cream/10 p-4">
+            <div className="flex items-start justify-between gap-3 mb-2 flex-wrap sm:flex-nowrap">
+              <div className="flex items-center gap-2">
+                <span className="rounded-full bg-ink text-cream px-2.5 py-1 text-xs font-semibold uppercase tracking-wider">
+                  {c.clauseType}
+                </span>
+                <SeverityChip s={c.riskRating} />
+              </div>
+            </div>
+            <div className="text-sm space-y-2 mt-3">
+              <div className="rounded bg-white border border-ink/5 p-3 text-xs italic text-ink/80 font-mono leading-relaxed">
+                "{c.extractedText}"
+              </div>
+              <p className="text-ink">
+                <span className="font-semibold block text-xs text-body mb-0.5">PLAIN-ENGLISH WARNING:</span>
+                {c.explanation}
+              </p>
+              <p className="text-body border-t border-ink/5 pt-2">
+                <span className="font-semibold block text-xs text-ink mb-0.5" style={{ color: "var(--safe)" }}>NEGOTIATION STRATEGY:</span>
+                {c.mitigationStrategy}
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function EquitySimulatorCard({ r }: { r: PartialAnalysisResult }) {
+  const eq = r.salary?.equityDetails;
+
+  const [options, setOptions] = useState(eq?.optionsGranted || 15000);
+  const [strike, setStrike] = useState(eq?.strikePrice || 1.25);
+  const [outstanding, setOutstanding] = useState(10000000); // 10M shares default
+  const [exitValuation, setExitValuation] = useState(100000000); // $100M exit default
+  const [dilution, setDilution] = useState(20); // 20% future dilution default
+
+  if (!eq) return null;
+
+  // Calculations
+  const initialOwnership = (options / outstanding) * 100;
+  const finalOwnership = initialOwnership * (1 - dilution / 100);
+  const grossExitValue = (finalOwnership / 100) * exitValuation;
+  const exerciseCost = options * strike;
+  const netValue = Math.max(0, grossExitValue - exerciseCost);
+
+  return (
+    <Card 
+      title="Interactive Equity Valuation Simulator" 
+      subtitle="Play with the sliders to project what your stock options could be worth in different exit scenarios."
+    >
+      <div className="grid gap-6 md:grid-cols-2">
+        <div className="space-y-4">
+          <div>
+            <div className="flex justify-between text-xs text-body font-medium mb-1">
+              <span>Options Granted</span>
+              <span className="text-ink font-semibold">{options.toLocaleString()} shares</span>
+            </div>
+            <input 
+              type="range" 
+              min={1000} 
+              max={100000} 
+              step={500}
+              value={options} 
+              onChange={(e) => setOptions(Number(e.target.value))}
+              className="w-full accent-ink cursor-pointer"
+            />
+          </div>
+
+          <div>
+            <div className="flex justify-between text-xs text-body font-medium mb-1">
+              <span>Strike Price</span>
+              <span className="text-ink font-semibold">${strike.toFixed(2)}</span>
+            </div>
+            <input 
+              type="range" 
+              min={0.01} 
+              max={10.0} 
+              step={0.05}
+              value={strike} 
+              onChange={(e) => setStrike(Number(e.target.value))}
+              className="w-full accent-ink cursor-pointer"
+            />
+          </div>
+
+          <div>
+            <div className="flex justify-between text-xs text-body font-medium mb-1">
+              <span>Total Outstanding Shares</span>
+              <span className="text-ink font-semibold">{(outstanding / 1000000).toFixed(1)}M shares</span>
+            </div>
+            <input 
+              type="range" 
+              min={1000000} 
+              max={100000000} 
+              step={1000000}
+              value={outstanding} 
+              onChange={(e) => setOutstanding(Number(e.target.value))}
+              className="w-full accent-ink cursor-pointer"
+            />
+          </div>
+
+          <div>
+            <div className="flex justify-between text-xs text-body font-medium mb-1">
+              <span>Future Dilution (subsequent rounds)</span>
+              <span className="text-ink font-semibold">{dilution}%</span>
+            </div>
+            <input 
+              type="range" 
+              min={0} 
+              max={80} 
+              step={5}
+              value={dilution} 
+              onChange={(e) => setDilution(Number(e.target.value))}
+              className="w-full accent-ink cursor-pointer"
+            />
+          </div>
+
+          <div>
+            <div className="flex justify-between text-xs text-body font-medium mb-1">
+              <span>Simulated Exit Valuation</span>
+              <span className="text-ink font-semibold">${(exitValuation / 1000000).toLocaleString()}M</span>
+            </div>
+            <input 
+              type="range" 
+              min={5000000} 
+              max={500000000} 
+              step={5000000}
+              value={exitValuation} 
+              onChange={(e) => setExitValuation(Number(e.target.value))}
+              className="w-full accent-ink cursor-pointer"
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-col justify-between rounded-xl border border-ink/10 bg-cream/30 p-5">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-ink/60 mb-4">Simulated Payout</p>
+            <div className="space-y-4">
+              <div className="flex justify-between text-sm border-b border-ink/5 pb-2">
+                <span className="text-body">Vesting details:</span>
+                <span className="text-ink font-mono text-xs font-semibold">{eq.vestingSchedule || "Not specified"}</span>
+              </div>
+              <div className="flex justify-between text-sm border-b border-ink/5 pb-2">
+                <span className="text-body">Ownership percentage:</span>
+                <span className="text-ink font-medium">{initialOwnership.toFixed(4)}%</span>
+              </div>
+              <div className="flex justify-between text-sm border-b border-ink/5 pb-2">
+                <span className="text-body">Post-dilution ownership:</span>
+                <span className="text-ink font-medium">{finalOwnership.toFixed(4)}%</span>
+              </div>
+              <div className="flex justify-between text-sm border-b border-ink/5 pb-2">
+                <span className="text-body">Cost to exercise options:</span>
+                <span className="text-ink font-medium">${exerciseCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+              </div>
+              <div className="flex justify-between text-sm pt-2">
+                <span className="text-body font-medium">Gross value at exit:</span>
+                <span className="text-ink font-medium">${grossExitValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-6 border-t border-ink/10 pt-4 text-center">
+            <p className="text-xs text-body uppercase tracking-wider font-semibold">Estimated Net Value</p>
+            <p className="font-display text-4xl text-ink mt-1 font-bold" style={{ color: netValue > 0 ? "var(--safe)" : "var(--body)" }}>
+              ${netValue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+            </p>
+          </div>
+        </div>
+      </div>
+    </Card>
   );
 }
