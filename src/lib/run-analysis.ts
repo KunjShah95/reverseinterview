@@ -24,6 +24,8 @@ import {
 } from "./agents.server";
 import { runSwarmJob, type SwarmPatch } from "./analysis-swarm.server";
 import { runPreliminaryAnalysis } from "./preliminary.server";
+import { runCompanyDeepDive } from "./company-deep-dive.server";
+import { sendReportEmail } from "./email.server";
 
 export type RunProgress = {
   culture: "pending" | "running" | "complete" | "failed" | "skipped";
@@ -112,6 +114,8 @@ export const startAnalysis = createServerFn({ method: "POST" })
       jobDescriptionText: z.string().optional(),
       recruiterChatText: z.string().optional(),
       offerLetterText: z.string().optional(),
+      email: z.string().email().optional().or(z.literal("")),
+      emailConsent: z.boolean().optional(),
     }),
   )
   .handler(async ({ data }) => {
@@ -219,16 +223,62 @@ export const startAnalysis = createServerFn({ method: "POST" })
     };
 
     // Run swarm in background and return analysis ID immediately
-    runSwarmJob({
+    const swarmPromise = runSwarmJob({
       analysisId,
       input,
       specialistAgents,
       criticAgent,
       orchestratorAgent,
       persistPatch,
-    }).catch((err) => {
+    });
+
+    swarmPromise.catch((err) => {
       console.error("Swarm job unhandled exception:", err);
     });
+
+    // After swarm complete, trigger email + deep dive if opted in
+    if (data.email && data.emailConsent) {
+      swarmPromise.then(async () => {
+        const current = progressStore.get(analysisId);
+        const result = current?.result;
+        if (!result) return;
+
+        // Generate PDF
+        let pdfBase64: string | null = null;
+        try {
+          const { jsPDF } = await import("jspdf");
+          const doc = new jsPDF();
+          doc.text("OfferGuard AI Report", 20, 20);
+          doc.text(`Company: ${result.company || "N/A"}`, 20, 30);
+          doc.text(`Role: ${result.roleTitle || "N/A"}`, 20, 40);
+          if (result.orchestrator) {
+            doc.text(`Verdict: ${result.orchestrator.recommendation}`, 20, 50);
+            doc.text(result.orchestrator.verdict, 20, 60);
+          }
+          pdfBase64 = btoa(String.fromCharCode(...new Uint8Array(doc.output("arraybuffer"))));
+        } catch (err) {
+          console.error("PDF generation failed:", err);
+        }
+
+        // Wave 1: Send main report
+        await sendReportEmail(data.email!, result, undefined, pdfBase64);
+
+        // Wave 2: Company deep dive (only if we have a company name)
+        if (result.company && result.company !== "Unknown Company") {
+          try {
+            const deepDive = await runCompanyDeepDive(result.company);
+            if (current.result) {
+              current.result = { ...current.result, companyDeepDive: deepDive };
+            }
+            await sendReportEmail(data.email!, result, deepDive, undefined);
+          } catch (err) {
+            console.error("Company deep dive failed:", err);
+          }
+        }
+      }).catch((err) => {
+        console.error("Email + deep dive pipeline failed:", err);
+      });
+    }
 
     return { analysisId };
   });
