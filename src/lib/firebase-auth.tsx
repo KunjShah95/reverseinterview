@@ -37,6 +37,13 @@ const reTagOrphanedLocalAnalyses = createClientOnlyFn(async (uid: string) => {
   return mod.reTagLocalAnalyses("any", uid);
 });
 
+// Push device-local analyses that predate login up to the user's Firestore
+// account so their full past history is durable and available on any device.
+const uploadLocalOnlyToFirestore = createClientOnlyFn(async (uid: string) => {
+  const mod = await import("./local-analysis");
+  return mod.uploadLocalOnlyToFirestore(uid);
+});
+
 type FirebaseAuthContextType = {
   user: User | null;
   loading: boolean;
@@ -89,10 +96,13 @@ export function FirebaseAuthProvider({ children }: Props) {
 
         setLoading(true);
         // Bring orphan analyses (saved pre-login under the device UUID) under
-        // the new firebase UID so they show up in history immediately.
-        void reTagOrphanedLocalAnalyses(firebaseUser.uid).catch((err) => {
-          console.error("Local analysis re-tag failed:", err);
-        });
+        // the new firebase UID so they show up in history immediately, then
+        // upload any that aren't in Firestore yet so history is cross-device.
+        void reTagOrphanedLocalAnalyses(firebaseUser.uid)
+          .then(() => uploadLocalOnlyToFirestore(firebaseUser.uid))
+          .catch((err) => {
+            console.error("Local analysis migration failed:", err);
+          });
         void syncFirebaseReportsToLocalCache(firebaseUser.uid)
           .catch((err) => {
             console.error("Firebase report sync failed:", err);

@@ -1,10 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import type {
-  AnalysisProgress,
   PartialAnalysisResult,
   CriticAgent,
-  PreliminaryResponse,
 } from "./analysis-types";
 import type { AnalysisInput } from "./agents.server";
 import {
@@ -27,6 +25,7 @@ import { runSwarmJob, type SwarmPatch } from "./analysis-swarm.server";
 import { runPreliminaryAnalysis } from "./preliminary.server";
 import { runCompanyDeepDive } from "./company-deep-dive.server";
 import { sendReportEmail } from "./email.server";
+import { setJob, getJob, updateJob, type JobRecord } from "./job-store.server";
 
 export type RunProgress = {
   culture: "pending" | "running" | "complete" | "failed" | "skipped";
@@ -44,14 +43,6 @@ export type RunProgress = {
   companyDeepDive: "pending" | "running" | "complete" | "failed" | "skipped";
   critic: "pending" | "running" | "complete" | "failed" | "skipped";
   orchestrator: "pending" | "running" | "complete" | "failed" | "skipped";
-};
-
-type RunStatus = {
-  status: "queued" | "running" | "complete" | "partial" | "failed";
-  error?: string;
-  progress: RunProgress;
-  result?: PartialAnalysisResult;
-  preliminary?: PreliminaryResponse;
 };
 
 function resetProgress(): RunProgress {
@@ -74,10 +65,21 @@ function resetProgress(): RunProgress {
   };
 }
 
-const progressStore = new Map<string, RunStatus>();
-
 function genId(): string {
   return `ai-${crypto.randomUUID()}`;
+}
+
+// Keep background work (swarm + email/deep-dive) alive after the HTTP response
+// is sent. On Vercel this uses the platform primitive; elsewhere the promise
+// simply runs unobserved (the durable job store still captures its progress).
+async function keepAlive(promise: Promise<unknown>): Promise<void> {
+  try {
+    const { waitUntil } = await import("@vercel/functions");
+    waitUntil(promise);
+  } catch {
+    // Not on Vercel (e.g. local dev) — let the promise run in the background.
+    void promise;
+  }
 }
 
 function pickCompany(text: string): string {
@@ -122,20 +124,21 @@ export const startAnalysis = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const analysisId = genId();
 
-    progressStore.set(analysisId, {
+    await setJob(analysisId, {
       status: "running",
       progress: resetProgress(),
     });
 
     // Run preliminary analysis (fast first-pass)
-    runPreliminaryAnalysis(data.sourceText).then((preliminary) => {
-      const current = progressStore.get(analysisId);
-      if (current) {
-        current.preliminary = preliminary;
-      }
-    }).catch(() => {
-      // Non-blocking — preliminary is optional
-    });
+    const preliminaryPromise = runPreliminaryAnalysis(data.sourceText)
+      .then(async (preliminary) => {
+        await updateJob(analysisId, (current) =>
+          current ? { ...current, preliminary } : current,
+        );
+      })
+      .catch(() => {
+        // Non-blocking — preliminary is optional
+      });
 
     const input: AnalysisInput = {
       sourceText: data.sourceText,
@@ -150,31 +153,34 @@ export const startAnalysis = createServerFn({ method: "POST" })
     };
 
     const persistPatch = async (patch: SwarmPatch) => {
-      const current = progressStore.get(analysisId);
-      if (!current) return;
+      await updateJob(analysisId, (current) => {
+        if (!current) return current;
+        const next: JobRecord = { ...current, progress: { ...current.progress } };
 
-      if (patch.status) {
-        current.status = patch.status;
-      }
-      if (patch.error !== undefined) {
-        current.error = patch.error ?? undefined;
-      }
-      if (patch.progress) {
-        for (const key of Object.keys(patch.progress) as (keyof RunProgress)[]) {
-          const agentPatch = patch.progress[key];
-          if (agentPatch) {
-            current.progress[key] = agentPatch.status;
+        if (patch.status) {
+          next.status = patch.status;
+        }
+        if (patch.error !== undefined) {
+          next.error = patch.error ?? undefined;
+        }
+        if (patch.progress) {
+          for (const key of Object.keys(patch.progress) as (keyof RunProgress)[]) {
+            const agentPatch = patch.progress[key];
+            if (agentPatch) {
+              next.progress[key] = agentPatch.status;
+            }
           }
         }
-      }
-      if (patch.result) {
-        current.result = {
-          company: data.company || pickCompany(data.sourceText),
-          roleTitle: data.roleTitle || pickRole(data.sourceText),
-          ...current.result,
-          ...patch.result,
-        } as PartialAnalysisResult;
-      }
+        if (patch.result) {
+          next.result = {
+            company: data.company || pickCompany(data.sourceText),
+            roleTitle: data.roleTitle || pickRole(data.sourceText),
+            ...current.result,
+            ...patch.result,
+          } as PartialAnalysisResult;
+        }
+        return next;
+      });
     };
 
     const specialistAgents = [
@@ -224,67 +230,77 @@ export const startAnalysis = createServerFn({ method: "POST" })
       },
     };
 
-    // Run swarm in background and return analysis ID immediately
-    const swarmPromise = runSwarmJob({
-      analysisId,
-      input,
-      specialistAgents,
-      criticAgent,
-      orchestratorAgent,
-      persistPatch,
-    });
-
-    swarmPromise.catch((err) => {
-      console.error("Swarm job unhandled exception:", err);
-    });
-
-    // After swarm complete, trigger email + deep dive if opted in
-    if (data.email && data.emailConsent) {
-      swarmPromise.then(async () => {
-        const current = progressStore.get(analysisId);
-        const result = current?.result;
-        if (!result) return;
-
-        // Generate PDF
-        let pdfBase64: string | null = null;
-        try {
-          const { jsPDF } = await import("jspdf");
-          const doc = new jsPDF();
-          doc.text("OfferGuard AI Report", 20, 20);
-          doc.text(`Company: ${result.company || "N/A"}`, 20, 30);
-          doc.text(`Role: ${result.roleTitle || "N/A"}`, 20, 40);
-          if (result.orchestrator) {
-            doc.text(`Verdict: ${result.orchestrator.recommendation}`, 20, 50);
-            doc.text(result.orchestrator.verdict, 20, 60);
-          }
-          const pdfBuffer = Buffer.from(doc.output("arraybuffer"));
-          pdfBase64 = pdfBuffer.toString("base64");
-        } catch (err) {
-          console.error("PDF generation failed:", err);
-        }
-
-        // Wave 1: Send main report
-        await sendReportEmail(data.email!, result, undefined, pdfBase64);
-
-        // Wave 2: Company deep dive (only if we have a company name)
-        if (result.company && result.company !== "Unknown Company") {
-          if (current) current.progress.companyDeepDive = "running";
-          try {
-            const deepDive = await runCompanyDeepDive(result.company);
-            if (current?.result) {
-              current.result = { ...current.result, companyDeepDive: deepDive };
-            }
-            if (current) current.progress.companyDeepDive = "complete";
-            await sendReportEmail(data.email!, result, deepDive, undefined);
-          } catch (err) {
-            if (current) current.progress.companyDeepDive = "failed";
-            console.error("Company deep dive failed:", err);
-          }
-        }
-      }).catch((err) => {
-        console.error("Email + deep dive pipeline failed:", err);
+    // Run the full pipeline as background work. State is persisted to the
+    // durable job store on every step, so even if this instance is frozen or
+    // recycled, the last completed progress + partial result survives and the
+    // client can keep polling successfully.
+    const pipeline = (async () => {
+      await runSwarmJob({
+        analysisId,
+        input,
+        specialistAgents,
+        criticAgent,
+        orchestratorAgent,
+        persistPatch,
       });
-    }
+
+      // After swarm, trigger email + deep dive if opted in.
+      if (!(data.email && data.emailConsent)) return;
+
+      const current = await getJob(analysisId);
+      const result = current?.result;
+      if (!result) return;
+
+      // Generate PDF
+      let pdfBase64: string | null = null;
+      try {
+        const { jsPDF } = await import("jspdf");
+        const doc = new jsPDF();
+        doc.text("OfferGuard AI Report", 20, 20);
+        doc.text(`Company: ${result.company || "N/A"}`, 20, 30);
+        doc.text(`Role: ${result.roleTitle || "N/A"}`, 20, 40);
+        if (result.orchestrator) {
+          doc.text(`Verdict: ${result.orchestrator.recommendation}`, 20, 50);
+          doc.text(result.orchestrator.verdict, 20, 60);
+        }
+        const pdfBuffer = Buffer.from(doc.output("arraybuffer"));
+        pdfBase64 = pdfBuffer.toString("base64");
+      } catch (err) {
+        console.error("PDF generation failed:", err);
+      }
+
+      // Wave 1: Send main report
+      await sendReportEmail(data.email!, result, undefined, pdfBase64);
+
+      // Wave 2: Company deep dive (only if we have a company name)
+      if (result.company && result.company !== "Unknown Company") {
+        await updateJob(analysisId, (c) =>
+          c ? { ...c, progress: { ...c.progress, companyDeepDive: "running" } } : c,
+        );
+        try {
+          const deepDive = await runCompanyDeepDive(result.company);
+          await updateJob(analysisId, (c) =>
+            c
+              ? {
+                  ...c,
+                  result: { ...c.result, companyDeepDive: deepDive } as PartialAnalysisResult,
+                  progress: { ...c.progress, companyDeepDive: "complete" },
+                }
+              : c,
+          );
+          await sendReportEmail(data.email!, result, deepDive, undefined);
+        } catch (err) {
+          await updateJob(analysisId, (c) =>
+            c ? { ...c, progress: { ...c.progress, companyDeepDive: "failed" } } : c,
+          );
+          console.error("Company deep dive failed:", err);
+        }
+      }
+    })().catch((err) => {
+      console.error("Analysis pipeline unhandled exception:", err);
+    });
+
+    await keepAlive(Promise.all([preliminaryPromise, pipeline]));
 
     return { analysisId };
   });
@@ -292,11 +308,14 @@ export const startAnalysis = createServerFn({ method: "POST" })
 export const pollAnalysis = createServerFn({ method: "POST" })
   .inputValidator(z.object({ analysisId: z.string() }))
   .handler(async ({ data }) => {
-    const cached = progressStore.get(data.analysisId);
+    const cached = await getJob(data.analysisId);
     if (!cached) {
+      // Distinct from "failed": the job may simply have aged out of the store
+      // or not be visible yet. The client keeps its last good partial instead
+      // of clobbering it, and can offer a retry.
       return {
-        status: "failed" as const,
-        error: "Analysis not found",
+        status: "expired" as const,
+        error: "Analysis session expired or not found",
         progress: resetProgress(),
         result: null,
         preliminary: null,

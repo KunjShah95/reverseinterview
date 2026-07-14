@@ -21,7 +21,11 @@ function readAnalyses(): LocalAnalysisRecord[] {
 
 function writeAnalyses(records: LocalAnalysisRecord[]) {
   if (!canUseStorage()) return;
-  window.localStorage.setItem(LOCAL_ANALYSES_KEY, JSON.stringify(records.slice(0, 50)));
+  try {
+    window.localStorage.setItem(LOCAL_ANALYSES_KEY, JSON.stringify(records.slice(0, 200)));
+  } catch (err) {
+    console.error("localStorage write failed in report-persistence:", err);
+  }
 }
 
 export async function persistAnalysisRecord(record: LocalAnalysisRecord, uid?: string | null) {

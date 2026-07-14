@@ -29,6 +29,9 @@ export type AnalysisInput = {
   offeredSalary?: string;
   location?: string;
   yearsExperience?: string;
+  jobDescriptionText?: string;
+  recruiterChatText?: string;
+  offerLetterText?: string;
 };
 
 const SYSTEM_BASE = `You are a specialist job-offer analyst. You read job posts, offer letters, and recruiter messages and return honest, evidence-backed analysis. Only flag what the text actually supports — do not invent signals. If there isn't enough information to assess something, say so clearly.`;

@@ -19,6 +19,9 @@ export type LocalAnalysisRecord = {
   error: string | null;
   progress: AnalysisProgress;
   result: PartialAnalysisResult;
+  // The exact text the user submitted, kept so past reports are self-contained
+  // and users can revisit what they originally pasted. Truncated on write.
+  sourceText?: string;
 };
 
 export type LocalAnalysisInput = {
@@ -28,6 +31,9 @@ export type LocalAnalysisInput = {
   offeredSalary?: string;
   location?: string;
   yearsExperience?: string;
+  jobDescriptionText?: string;
+  recruiterChatText?: string;
+  offerLetterText?: string;
   sessionId?: string;
 };
 
@@ -47,9 +53,34 @@ function readAnalyses(): LocalAnalysisRecord[] {
   }
 }
 
+const MAX_STORED_RECORDS = 200;
+const MAX_STORED_SOURCE_CHARS = 20_000;
+
+// Trim the stored input so a long JD doesn't blow past the ~5MB localStorage
+// quota when many reports accumulate. Firestore keeps the full-length copy.
+function trimForStorage(record: LocalAnalysisRecord): LocalAnalysisRecord {
+  if (record.sourceText && record.sourceText.length > MAX_STORED_SOURCE_CHARS) {
+    return { ...record, sourceText: record.sourceText.slice(0, MAX_STORED_SOURCE_CHARS) };
+  }
+  return record;
+}
+
 function writeAnalyses(records: LocalAnalysisRecord[]) {
   if (!canUseStorage()) return;
-  window.localStorage.setItem(LOCAL_ANALYSES_KEY, JSON.stringify(records.slice(0, 50)));
+  const trimmed = records.slice(0, MAX_STORED_RECORDS).map(trimForStorage);
+  try {
+    window.localStorage.setItem(LOCAL_ANALYSES_KEY, JSON.stringify(trimmed));
+  } catch (err) {
+    // Quota exceeded — drop stored source text (largest field) and retry once
+    // so we never lose the report metadata itself.
+    console.warn("localStorage write failed, retrying without source text:", err);
+    const lean = trimmed.map(({ sourceText: _omit, ...rest }) => rest);
+    try {
+      window.localStorage.setItem(LOCAL_ANALYSES_KEY, JSON.stringify(lean));
+    } catch (retryErr) {
+      console.error("localStorage write failed after trimming:", retryErr);
+    }
+  }
 }
 
 function scoreForKeywords(text: string, keywords: string[]) {
@@ -415,6 +446,7 @@ export function createLocalAnalysis(input: LocalAnalysisInput): LocalAnalysisRec
     error: null,
     progress: buildProgress(),
     result,
+    sourceText: input.sourceText,
   };
 }
 
@@ -440,6 +472,38 @@ export function saveLocalAnalysis(record: LocalAnalysisRecord, uid?: string) {
 
 export function getLocalAnalysis(id: string) {
   return readAnalyses().find((record) => record.id === id) ?? null;
+}
+
+// On login, push any device-local analyses that aren't in the user's Firestore
+// account yet, so their full history follows them across devices. Idempotent:
+// records already in Firestore are skipped. Returns the number uploaded.
+export async function uploadLocalOnlyToFirestore(uid: string): Promise<number> {
+  const cleanUid = uid?.trim();
+  if (!cleanUid) return 0;
+  const local = readAnalyses();
+  if (local.length === 0) return 0;
+
+  const { listUserReports, saveReportToFirestore } = await import("./firestore");
+  let remoteIds: Set<string>;
+  try {
+    const remote = await listUserReports(cleanUid, 200);
+    remoteIds = new Set(remote.map((r) => r.id));
+  } catch (err) {
+    console.error("Failed to list Firestore reports before upload:", err);
+    return 0;
+  }
+
+  let uploaded = 0;
+  for (const record of local) {
+    if (remoteIds.has(record.id)) continue;
+    try {
+      await saveReportToFirestore(cleanUid, { ...record, sessionId: cleanUid });
+      uploaded++;
+    } catch (err) {
+      console.error(`Failed to upload local analysis ${record.id}:`, err);
+    }
+  }
+  return uploaded;
 }
 
 export function listLocalAnalyses(sessionId: string) {

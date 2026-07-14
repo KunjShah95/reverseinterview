@@ -978,7 +978,12 @@ function ReportPage() {
         const result = await pollAnalysisFn({ data: { analysisId: id } });
         if (!active) return;
 
-        if (result.status === "failed") {
+        if (result.status === "expired") {
+          // Server job aged out or isn't visible. Keep whatever partial we
+          // already have (never overwrite good data with an empty result) and
+          // stop polling — the record stays readable from local/Firestore.
+          clearInterval(interval);
+        } else if (result.status === "failed") {
           const updated: LocalAnalysisRecord = {
             ...localData,
             status: "failed",
@@ -1257,6 +1262,18 @@ function ReportPage() {
           </div>
         </div>
       </div>
+      {currentData.sourceText && (
+        <div className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pb-6 print:hidden">
+          <details className="rounded-2xl border border-ink/10 bg-white shadow-sm">
+            <summary className="cursor-pointer select-none px-5 py-4 text-sm font-semibold text-ink">
+              Your submission — the exact text this analysis was run on
+            </summary>
+            <pre className="max-h-96 overflow-auto whitespace-pre-wrap border-t border-ink/10 px-5 py-4 text-xs leading-relaxed text-body font-mono">
+              {currentData.sourceText}
+            </pre>
+          </details>
+        </div>
+      )}
       <div className="mx-auto max-w-5xl px-4 sm:px-6 md:px-10 pb-10 flex flex-wrap items-center justify-center gap-3 print:hidden">
         {downloading ? (
           <button
@@ -1682,8 +1699,8 @@ function SimulationCard({ r, progress }: { r: PartialAnalysisResult; progress: A
       {/* Interactive timeline view (shown on screen, hidden on print) */}
       <div className="print:hidden space-y-6">
         {/* Timeline track progress bar */}
-        <div className="relative flex items-center justify-between px-4 sm:px-12 mb-8">
-          <div className="absolute left-8 right-8 top-1/2 h-0.5 bg-ink/10 -translate-y-1/2 -z-10" />
+        <div className="relative flex items-start justify-between px-2 sm:px-12 mb-8">
+          <div className="absolute left-8 right-8 top-4 h-0.5 bg-ink/10 -z-10" />
           {phases.map((p, idx) => {
             const isActive = activePhase === idx;
             return (
@@ -1694,7 +1711,7 @@ function SimulationCard({ r, progress }: { r: PartialAnalysisResult; progress: A
                 className="flex flex-col items-center gap-2 group focus:outline-none cursor-pointer"
               >
                 <div
-                  className={`w-8 h-8 rounded-full border-2 flex items-center justify-center font-mono text-xs font-semibold transition-all ${
+                  className={`w-8 h-8 shrink-0 rounded-full border-2 flex items-center justify-center font-mono text-xs font-semibold transition-all ${
                     isActive
                       ? "bg-ink border-ink text-cream scale-110 shadow-sm"
                       : "bg-white border-ink/20 text-ink/50 group-hover:border-ink/60 group-hover:text-ink/80"
@@ -1703,7 +1720,7 @@ function SimulationCard({ r, progress }: { r: PartialAnalysisResult; progress: A
                   {idx + 1}
                 </div>
                 <span
-                  className={`text-xs font-medium uppercase tracking-wider transition-colors ${
+                  className={`max-w-[5rem] text-center text-[10px] sm:text-xs font-medium uppercase tracking-wider transition-colors ${
                     isActive ? "text-ink font-semibold" : "text-ink/50 group-hover:text-ink/80"
                   }`}
                 >

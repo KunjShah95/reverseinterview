@@ -401,9 +401,50 @@ function AnalyzePage() {
         },
       });
 
+      // Reuse the server-issued analysisId as the local record id so a heuristic
+      // fallback and the real AI record can never coexist as duplicate cards.
+      const goToFallback = () => {
+        const fallback = createLocalAnalysis({
+          sourceText: sourceTextVal,
+          company: company || undefined,
+          roleTitle: roleTitle || undefined,
+          offeredSalary: offeredSalary || undefined,
+          location: location || undefined,
+          yearsExperience: yearsExperience || undefined,
+          jobDescriptionText: mode === "timeline" ? jdText || undefined : undefined,
+          recruiterChatText: mode === "timeline" ? chatText || undefined : undefined,
+          offerLetterText: mode === "timeline" ? offerText || undefined : undefined,
+          sessionId: getSessionId(),
+        });
+        const record = { ...fallback, id: analysisId };
+        const uid = firebaseAuth?.currentUser?.uid ?? undefined;
+        saveLocalAnalysis(record, uid);
+        toast.info("Created a report with initial analysis while deeper AI analysis continues.");
+        setSubmitting(false);
+        setRunProgress(null);
+        navigate({ to: "/report/$id", params: { id: analysisId } });
+      };
+
+      // Tolerate a few transient poll misses (cold start / cross-instance) before
+      // giving up — the durable job store usually recovers within a tick or two.
+      let missStreak = 0;
+      const MAX_MISSES = 4;
+
       pollingRef.current = setInterval(async () => {
         try {
           const result = await pollAnalysisFn({ data: { analysisId } });
+
+          if (result.status === "expired") {
+            missStreak += 1;
+            if (missStreak >= MAX_MISSES) {
+              if (pollingRef.current) clearInterval(pollingRef.current);
+              pollingRef.current = null;
+              goToFallback();
+            }
+            return;
+          }
+          missStreak = 0;
+
           if (result.progress) setRunProgress(result.progress);
           if (result.preliminary && !preliminary) {
             setPreliminary(result.preliminary);
@@ -432,6 +473,7 @@ function AnalyzePage() {
               error: result.error || null,
               progress: finalProgress,
               result: result.result,
+              sourceText: sourceTextVal,
             };
             const uid = firebaseAuth?.currentUser?.uid ?? undefined;
             saveLocalAnalysis(record, uid);
@@ -442,29 +484,17 @@ function AnalyzePage() {
           if (result.status === "failed") {
             if (pollingRef.current) clearInterval(pollingRef.current);
             pollingRef.current = null;
-            throw new Error(result.error || "Analysis failed");
+            goToFallback();
           }
         } catch (pollErr) {
-          if (pollingRef.current) clearInterval(pollingRef.current);
-          pollingRef.current = null;
-          const fallback = createLocalAnalysis({
-            sourceText: sourceTextVal,
-            company: company || undefined,
-            roleTitle: roleTitle || undefined,
-            offeredSalary: offeredSalary || undefined,
-            location: location || undefined,
-            yearsExperience: yearsExperience || undefined,
-            jobDescriptionText: mode === "timeline" ? jdText || undefined : undefined,
-            recruiterChatText: mode === "timeline" ? chatText || undefined : undefined,
-            offerLetterText: mode === "timeline" ? offerText || undefined : undefined,
-            sessionId: getSessionId(),
-          });
-          const uid = firebaseAuth?.currentUser?.uid ?? undefined;
-          saveLocalAnalysis(fallback, uid);
-          toast.info("Created a report with initial analysis while deeper AI analysis continues.");
-          setSubmitting(false);
-          setRunProgress(null);
-          navigate({ to: "/report/$id", params: { id: fallback.id } });
+          // Network error on a single tick — tolerate transient failures, only
+          // fall back after the miss streak is exhausted.
+          missStreak += 1;
+          if (missStreak >= MAX_MISSES) {
+            if (pollingRef.current) clearInterval(pollingRef.current);
+            pollingRef.current = null;
+            goToFallback();
+          }
         }
       }, 1500);
     } catch (err) {

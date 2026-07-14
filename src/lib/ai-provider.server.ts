@@ -48,16 +48,15 @@ function createModel(provider: ProviderName, modelName: string) {
     case "openrouter": {
       const apiKey = process.env.OPENROUTER_API_KEY?.trim() || "";
       const openrouter = createOpenAI({ apiKey, baseURL: OPENROUTER_BASE_URL });
-      return openrouter(modelName);
+      // OpenRouter speaks /chat/completions, not the OpenAI Responses API.
+      return openrouter.chat(modelName);
     }
     case "nvidia": {
       const apiKey = process.env.NVIDIA_API_KEY?.trim() || "";
-      const nvidia = createOpenAI({
-        apiKey,
-        baseURL: NVIDIA_BASE_URL,
-        compatibility: "compatible", // NVIDIA NIM uses /chat/completions, not /responses
-      });
-      return nvidia(modelName);
+      const nvidia = createOpenAI({ apiKey, baseURL: NVIDIA_BASE_URL });
+      // NVIDIA NIM exposes /chat/completions, not the OpenAI Responses API, so
+      // pin the chat-completions model instead of the default responses model.
+      return nvidia.chat(modelName);
     }
     default:
       throw new Error(`Unsupported AI provider: ${provider}`);

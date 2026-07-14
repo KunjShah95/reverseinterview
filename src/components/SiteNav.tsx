@@ -199,6 +199,20 @@ export default function SiteNav({ solid = false, hideDashboard = false }: Props)
                 >
                   Dashboard
                 </Link>
+                <Link
+                  to="/history"
+                  onClick={() => setMenuOpen(false)}
+                  className="text-2xl font-semibold text-ink py-4 border-b border-ink/10"
+                >
+                  History
+                </Link>
+                <Link
+                  to="/analyze"
+                  onClick={() => setMenuOpen(false)}
+                  className="text-2xl font-semibold text-ink py-4 border-b border-ink/10"
+                >
+                  New analysis
+                </Link>
                 {!hideDashboard && (
                   <Link
                     to="/settings"

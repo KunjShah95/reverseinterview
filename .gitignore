@@ -37,3 +37,6 @@ docs/
 .loveable/
 .superpowers/
 .vercel
+
+# Playwright MCP test artifacts
+.playwright-mcp/
