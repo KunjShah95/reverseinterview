@@ -40,3 +40,7 @@ docs/
 
 # Playwright MCP test artifacts
 .playwright-mcp/
+
+# Firebase service account
+buildrelay-15763-firebase-adminsdk-fbsvc-a2effa87a6.json
+*.firebase-adminsdk*.json

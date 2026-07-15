@@ -11,6 +11,47 @@ export type ProviderName = "groq" | "mistral" | "gemini" | "openrouter" | "nvidi
 
 export const DEFAULT_PROVIDER: ProviderName = (process.env.DEFAULT_AI_PROVIDER as ProviderName) || "groq";
 
+// Concurrency limiter so 12 parallel agents don't overwhelm any provider's
+// rate limit. Default 6 concurrent — enough to saturate most free tiers without
+// triggering 429s. Tune via AI_CONCURRENCY env var.
+const AI_CONCURRENCY = Math.max(1, Math.min(20, Number(process.env.AI_CONCURRENCY) || 6));
+
+class Semaphore {
+  private running = 0;
+  private queue: (() => void)[] = [];
+  constructor(private max: number) {}
+  async acquire(): Promise<void> {
+    if (this.running < this.max) {
+      this.running++;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this.queue.push(() => {
+        this.running++;
+        resolve();
+      });
+    });
+  }
+  release(): void {
+    const next = this.queue.shift();
+    if (next) {
+      next();
+    } else {
+      this.running--;
+    }
+  }
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      this.release();
+    }
+  }
+}
+
+const semaphore = new Semaphore(AI_CONCURRENCY);
+
 // NVIDIA NIM — OpenAI-compatible inference endpoint.
 // Get a free API key at: https://build.nvidia.com
 const NVIDIA_BASE_URL = process.env.NVIDIA_BASE_URL?.trim() || "https://integrate.api.nvidia.com/v1";
@@ -110,7 +151,14 @@ export async function generateTextWithProvider<
   output: T;
 }) {
   try {
-    return await vercelGenerateText({ model, messages, output });
+    return await semaphore.run(() =>
+      vercelGenerateText({
+        model,
+        messages,
+        output,
+        allowSystemInMessages: true,
+      }),
+    );
   } catch (error) {
     console.error(`Primary model call failed (Provider: ${provider}):`, error);
 
@@ -122,11 +170,14 @@ export async function generateTextWithProvider<
       try {
         console.warn(`Attempting fallback LLM call with provider: ${backup.provider}, model: ${backup.modelName}`);
         const fallbackModel = createModel(backup.provider, backup.modelName);
-        return await vercelGenerateText({
-          model: fallbackModel,
-          messages,
-          output,
-        });
+        return await semaphore.run(() =>
+          vercelGenerateText({
+            model: fallbackModel,
+            messages,
+            output,
+            allowSystemInMessages: true,
+          }),
+        );
       } catch (fallbackError) {
         console.error(`Fallback model call failed (Provider: ${backup.provider}):`, fallbackError);
       }
