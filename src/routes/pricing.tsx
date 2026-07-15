@@ -13,7 +13,14 @@ export const Route = createFileRoute("/pricing")({
           "Reverse Interview AI is free. No credit card, no limits, no tricks.",
       },
       { property: "og:title", content: "Pricing — Reverse Interview AI" },
+      {
+        property: "og:description",
+        content:
+          "Reverse Interview AI is free. No credit card, no limits, no tricks.",
+      },
+      { property: "og:image", content: "/og.svg" },
     ],
+    links: [{ rel: "canonical", href: "https://reverseinterview.vercel.app/pricing" }],
   }),
   component: Pricing,
 });

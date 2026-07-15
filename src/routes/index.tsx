@@ -39,8 +39,11 @@ export const Route = createFileRoute("/")({
         content:
           "The AI that interviews the company before you join. See what working there will actually feel like.",
       },
-      { property: "og:image", content: "/og.jpg" },
+      { property: "og:image", content: "/og.svg" },
+      { property: "og:image:width", content: "1200" },
+      { property: "og:image:height", content: "630" },
     ],
+    links: [{ rel: "canonical", href: "https://reverseinterview.vercel.app/" }],
   }),
   component: LandingPage,
 });

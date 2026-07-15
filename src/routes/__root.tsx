@@ -94,7 +94,14 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
-      { name: "twitter:site", content: "@example" },
+      { name: "twitter:site", content: "@reverseinterview" },
+      { property: "og:locale", content: "en_US" },
+      { property: "og:site_name", content: "Reverse Interview AI" },
+      { property: "og:url", content: getSiteUrl() },
+      { property: "og:image", content: getAbsoluteUrl("/og.svg") },
+      { property: "og:image:width", content: "1200" },
+      { property: "og:image:height", content: "630" },
+      { name: "twitter:image", content: getAbsoluteUrl("/og.svg") },
     ],
     links: [
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
@@ -106,6 +113,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         href: "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap",
       },
       { rel: "stylesheet", href: appCss },
+      { rel: "canonical", href: getSiteUrl() },
     ],
   }),
   shellComponent: RootShell,
@@ -129,7 +137,32 @@ function RootShell({ children }: { children: React.ReactNode }) {
               name: "Reverse Interview AI",
               url: getSiteUrl(),
               logo: getAbsoluteUrl("/favicon.svg"),
-              sameAs: [],
+              sameAs: [
+                "https://twitter.com/reverseinterview",
+              ],
+              description:
+                "AI-powered job offer analysis. Upload a job post, offer letter, or HR chat. Get toxicity flags, burnout risk, salary fairness, and ghost-hiring signals.",
+            }),
+          }}
+        />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify({
+              "@context": "https://schema.org",
+              "@type": "WebSite",
+              name: "Reverse Interview AI",
+              url: getSiteUrl(),
+              description:
+                "AI-powered job offer analysis. Upload a job post, offer letter, or HR chat. Get toxicity flags, burnout risk, salary fairness, and ghost-hiring signals.",
+              potentialAction: {
+                "@type": "SearchAction",
+                target: {
+                  "@type": "EntryPoint",
+                  urlTemplate: `${getSiteUrl()}/analyze`,
+                },
+                query: "required",
+              },
             }),
           }}
         />

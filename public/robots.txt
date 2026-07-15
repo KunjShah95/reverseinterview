@@ -5,6 +5,9 @@ Disallow: /settings
 Disallow: /history
 Disallow: /auth-callback
 Disallow: /link-provider
+Disallow: /login
+Disallow: /register
+Disallow: /report/
 
 # Allowed AI Bots for indexing and surfacing
 User-agent: GPTBot
@@ -29,3 +32,4 @@ User-agent: Bingbot
 Allow: /
 
 Sitemap: https://reverseinterview.vercel.app/sitemap.xml
+Host: https://reverseinterview.vercel.app

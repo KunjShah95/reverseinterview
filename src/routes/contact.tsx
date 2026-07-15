@@ -11,7 +11,14 @@ export const Route = createFileRoute("/contact")({
         name: "description",
         content: "Get in touch with the Reverse Interview AI team.",
       },
+      { property: "og:title", content: "Contact — Reverse Interview AI" },
+      {
+        property: "og:description",
+        content: "Get in touch with the Reverse Interview AI team.",
+      },
+      { property: "og:image", content: "/og.svg" },
     ],
+    links: [{ rel: "canonical", href: "https://reverseinterview.vercel.app/contact" }],
   }),
   component: Contact,
 });

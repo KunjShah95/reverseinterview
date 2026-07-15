@@ -13,7 +13,14 @@ export const Route = createFileRoute("/how-it-works")({
           "How eight specialist AI agents read a job posting and merge into one TruthScore verdict.",
       },
       { property: "og:title", content: "How Reverse Interview AI works" },
+      {
+        property: "og:description",
+        content:
+          "How eight specialist AI agents read a job posting and merge into one TruthScore verdict.",
+      },
+      { property: "og:image", content: "/og.svg" },
     ],
+    links: [{ rel: "canonical", href: "https://reverseinterview.vercel.app/how-it-works" }],
   }),
   component: HowItWorks,
 });

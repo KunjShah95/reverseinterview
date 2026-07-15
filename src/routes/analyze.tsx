@@ -95,7 +95,9 @@ export const Route = createFileRoute("/analyze")({
         content:
           "Eight specialist AI agents read the offer in parallel and tell you what working there will actually feel like.",
       },
+      { property: "og:image", content: "/og.svg" },
     ],
+    links: [{ rel: "canonical", href: "https://reverseinterview.vercel.app/analyze" }],
   }),
   component: AnalyzePage,
 });

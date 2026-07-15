@@ -22,7 +22,15 @@ export const Route = createFileRoute("/features")({
         content:
           "Eight specialist AI agents analyze toxicity, burnout, salary, ghost-hiring, and more from any job post or offer letter.",
       },
+      { property: "og:title", content: "Features — Reverse Interview AI" },
+      {
+        property: "og:description",
+        content:
+          "Eight specialist AI agents analyze toxicity, burnout, salary, ghost-hiring, and more from any job post or offer letter.",
+      },
+      { property: "og:image", content: "/og.svg" },
     ],
+    links: [{ rel: "canonical", href: "https://reverseinterview.vercel.app/features" }],
   }),
   component: Features,
 });

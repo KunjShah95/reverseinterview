@@ -12,7 +12,15 @@ export const Route = createFileRoute("/about")({
         content:
           "Reverse Interview AI helps candidates evaluate job offers with multi-agent analysis before signing.",
       },
+      { property: "og:title", content: "About — Reverse Interview AI" },
+      {
+        property: "og:description",
+        content:
+          "Reverse Interview AI helps candidates evaluate job offers with multi-agent analysis before signing.",
+      },
+      { property: "og:image", content: "/og.svg" },
     ],
+    links: [{ rel: "canonical", href: "https://reverseinterview.vercel.app/about" }],
   }),
   component: About,
 });
