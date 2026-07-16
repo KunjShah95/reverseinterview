@@ -91,6 +91,43 @@ function pickCompany(text: string): string {
   return "Unknown Company";
 }
 
+// Cheap, zero-cost relevance gate. Runs BEFORE any LLM call so unrelated text
+// (random questions, greetings, pasted code, spam) never spins up the 14-agent
+// swarm and burns tokens. Only obvious non-job input is rejected — the bar is
+// deliberately low so real offer letters / JDs / recruiter chats always pass,
+// even terse ones.
+const JOB_TERMS = [
+  "job", "role", "position", "offer", "salary", "compensation", "comp",
+  "employment", "employer", "employee", "hiring", "hire", "candidate",
+  "responsibilities", "requirements", "qualifications", "benefits", "equity",
+  "stock", "options", "vesting", "pto", "vacation", "remote", "onsite",
+  "on-site", "hybrid", "full-time", "part-time", "contract", "recruiter",
+  "interview", "company", "team", "manager", "experience", "skills",
+  "engineer", "developer", "designer", "analyst", "scientist", "director",
+  "bonus", "relocation", "start date", "offer letter", "job description",
+  "work", "startup", "onboarding", "base pay", "wage", "annual", "per year",
+  "reports to", "seniority", "senior", "junior", "lead", "intern", "internship",
+];
+
+function countJobTerms(text: string): number {
+  const lower = text.toLowerCase();
+  const seen = new Set<string>();
+  for (const term of JOB_TERMS) {
+    if (lower.includes(term)) seen.add(term);
+  }
+  return seen.size;
+}
+
+function wordCount(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+// A free-pasted blob must look like a real job document: enough length AND
+// enough distinct job vocabulary. A one-liner with a stray keyword is not a JD.
+function isJobRelated(text: string): boolean {
+  return wordCount(text) >= 20 && countJobTerms(text) >= 3;
+}
+
 function pickRole(text: string): string {
   const lower = text.toLowerCase();
   if (lower.includes("engineer")) return "Engineer";
@@ -122,6 +159,25 @@ export const startAnalysis = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data }) => {
+    // APIs fire only when the user actually supplied a JD / recruiter chat /
+    // offer letter. The timeline fields are explicitly labeled by the user, so
+    // trust them; free-pasted text must pass the keyword gate. Either way, no
+    // token is spent on random/unrelated input.
+    const hasStructuredDoc = !!(
+      data.jobDescriptionText?.trim() ||
+      data.recruiterChatText?.trim() ||
+      data.offerLetterText?.trim()
+    );
+
+    if (!hasStructuredDoc && !isJobRelated(data.sourceText)) {
+      return {
+        analysisId: "",
+        rejected: true as const,
+        reason:
+          "This doesn't look like a job description, offer letter, or recruiter message. Paste the actual job text and try again.",
+      };
+    }
+
     const analysisId = genId();
 
     await setJob(analysisId, {

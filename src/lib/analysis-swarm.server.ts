@@ -81,8 +81,10 @@ export async function runSwarmJob<TInput>({
 
   await persistPatch({ status: "running", startedAt: now(), error: null });
 
+  const STAGGER_MS = 300;
   await Promise.all(
-    specialistAgents.map(async (agent) => {
+    specialistAgents.map(async (agent, index) => {
+      if (index > 0) await new Promise((r) => setTimeout(r, index * STAGGER_MS));
       await persistPatch({
         progress: { [agent.id]: { status: "running", startedAt: now() } },
       });

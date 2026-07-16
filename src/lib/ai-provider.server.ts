@@ -16,6 +16,20 @@ export const DEFAULT_PROVIDER: ProviderName = (process.env.DEFAULT_AI_PROVIDER a
 // triggering 429s. Tune via AI_CONCURRENCY env var.
 const AI_CONCURRENCY = Math.max(1, Math.min(20, Number(process.env.AI_CONCURRENCY) || 6));
 
+// Per-attempt timeout. Without this a stalled provider (Groq holding the
+// connection open under rate-limit backpressure — common on the big critic /
+// orchestrator prompts) never resolves and never throws, so the job is stuck
+// "running" forever and the client polls indefinitely. A timeout converts the
+// hang into a throw, which triggers the fallback chain below. Tune via
+// AI_TIMEOUT_MS env var.
+const AI_TIMEOUT_MS = Math.max(5_000, Number(process.env.AI_TIMEOUT_MS) || 45_000);
+
+// Low temperature = deterministic, grounded output. High temp (provider default
+// ~1) makes the model invent numbers and "creative" filler not backed by the
+// text. Keep this near 0 so every score/verdict is driven by the offer letter /
+// chat content, not random sampling. Tune via AI_TEMPERATURE env var.
+const AI_TEMPERATURE = Math.max(0, Math.min(1, Number(process.env.AI_TEMPERATURE) || 0.1));
+
 class Semaphore {
   private running = 0;
   private queue: (() => void)[] = [];
@@ -157,6 +171,8 @@ export async function generateTextWithProvider<
         messages,
         output,
         allowSystemInMessages: true,
+        temperature: AI_TEMPERATURE,
+        abortSignal: AbortSignal.timeout(AI_TIMEOUT_MS),
       }),
     );
   } catch (error) {
@@ -176,6 +192,8 @@ export async function generateTextWithProvider<
             messages,
             output,
             allowSystemInMessages: true,
+            temperature: AI_TEMPERATURE,
+            abortSignal: AbortSignal.timeout(AI_TIMEOUT_MS),
           }),
         );
       } catch (fallbackError) {

@@ -387,7 +387,7 @@ function AnalyzePage() {
     });
 
     try {
-      const { analysisId } = await startAnalysisFn({
+      const startResult = await startAnalysisFn({
         data: {
           sourceText: sourceTextVal,
           company: company || undefined,
@@ -402,6 +402,16 @@ function AnalyzePage() {
           emailConsent: emailConsent || undefined,
         },
       });
+
+      // Relevance gate rejected the input — no analysis ran, no tokens spent.
+      if ("rejected" in startResult && startResult.rejected) {
+        toast.error(startResult.reason);
+        setSubmitting(false);
+        setRunProgress(null);
+        return;
+      }
+
+      const { analysisId } = startResult;
 
       // Reuse the server-issued analysisId as the local record id so a heuristic
       // fallback and the real AI record can never coexist as duplicate cards.
@@ -430,7 +440,7 @@ function AnalyzePage() {
       // Tolerate a few transient poll misses (cold start / cross-instance) before
       // giving up — the durable job store usually recovers within a tick or two.
       let missStreak = 0;
-      const MAX_MISSES = 4;
+      const MAX_MISSES = 8;
 
       pollingRef.current = setInterval(async () => {
         try {

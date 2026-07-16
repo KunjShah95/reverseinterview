@@ -1,4 +1,5 @@
 import { callStructured, AIServiceError } from "./ai-gateway.server";
+import { fetchMarketSalary, formatMarketRange } from "./salary-data.server";
 import type {
   CultureAgent,
   BurnoutAgent,
@@ -34,7 +35,15 @@ export type AnalysisInput = {
   offerLetterText?: string;
 };
 
-const SYSTEM_BASE = `You are a specialist job-offer analyst. You read job posts, offer letters, and recruiter messages and return honest, evidence-backed analysis. Only flag what the text actually supports — do not invent signals. If there isn't enough information to assess something, say so clearly.`;
+const SYSTEM_BASE = `You are a specialist job-offer analyst. You read job posts, offer letters, and recruiter messages and return honest, evidence-backed analysis.
+
+STRICT GROUNDING RULES — follow exactly:
+- Base EVERY finding, score, and number ONLY on what the provided text explicitly states. Do not invent, assume, or extrapolate beyond the text.
+- When you cite a signal, it must come from an actual phrase in the text. Quote or closely paraphrase that phrase.
+- If the text does not contain information to assess something, say so: use "unknown", an empty array, or the lowest confidence — do NOT guess.
+- Do not add generic career advice, filler, or content unrelated to this specific offer/chat.
+- Any numeric score must reflect evidence density in the text. No text evidence = neutral/unknown, never a made-up number.
+- For market/salary comparisons, only estimate when the text provides concrete figures (salary, level, location) to anchor against; otherwise return "unknown" with low confidence.`;
 
 function systemPrompt(role: string, instructions: string): string {
   return `${SYSTEM_BASE}
@@ -183,6 +192,14 @@ Score burnout risk and overtime probability 0-100 based ONLY on evidence in the 
 }
 
 export async function runSalaryAgent(input: AnalysisInput): Promise<SalaryAgent> {
+  // Pull REAL market compensation before the LLM runs, so the verdict is
+  // anchored to actual posting data instead of a hallucinated range. Null when
+  // no key / no match — the agent then falls back to its model estimate.
+  const marketData = await fetchMarketSalary({
+    title: input.roleTitle || "",
+    location: input.location,
+  });
+
   const result = await callStructured<{
     verdict: "underpaid" | "fair" | "overpaid" | "unknown";
     marketRangeEstimate: string;
@@ -263,6 +280,8 @@ Base verdict ONLY on what the text and provided context supports.`,
             input.offeredSalary && `Offered salary/compensation: ${input.offeredSalary}`,
             input.location && `Location: ${input.location}`,
             input.yearsExperience && `Candidate experience: ${input.yearsExperience} years`,
+            marketData &&
+              `REAL MARKET DATA (authoritative — sourced from ${marketData.source} across ${marketData.sampleSize} live postings for "${marketData.title}"${marketData.location ? ` in ${marketData.location}` : ""}): ${formatMarketRange(marketData)}. Base your verdict and marketRangeEstimate on THESE real numbers, not a guess. Compare the offered compensation against this range.`,
           ]
             .filter(Boolean)
             .join("\n"),
@@ -272,10 +291,14 @@ Base verdict ONLY on what the text and provided context supports.`,
   });
   return {
     verdict: result.arguments.verdict,
-    marketRangeEstimate: result.arguments.marketRangeEstimate,
+    // Prefer the real, sourced range over the model's estimate when available.
+    marketRangeEstimate: marketData
+      ? formatMarketRange(marketData)
+      : result.arguments.marketRangeEstimate,
     confidence: result.arguments.confidence,
     reasoning: result.arguments.reasoning,
     equityDetails: result.arguments.equityDetails,
+    marketData,
   };
 }
 

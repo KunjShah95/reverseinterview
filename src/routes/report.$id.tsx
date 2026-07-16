@@ -1566,8 +1566,18 @@ function SalaryCard({ r, progress }: { r: PartialAnalysisResult; progress: Analy
         </span>
       </div>
       <p className="text-sm text-ink">
-        <span className="font-medium">Estimated market range:</span> {r.salary.marketRangeEstimate}
+        <span className="font-medium">
+          {r.salary.marketData ? "Market range" : "Estimated market range"}:
+        </span>{" "}
+        {r.salary.marketRangeEstimate}
       </p>
+      {r.salary.marketData && (
+        <p className="mt-1 text-xs text-body/70">
+          Real data from {r.salary.marketData.source} ·{" "}
+          {r.salary.marketData.sampleSize.toLocaleString()} live postings
+          {r.salary.marketData.location ? ` · ${r.salary.marketData.location}` : ""}
+        </p>
+      )}
       <p className="mt-2 text-sm text-body">{r.salary.reasoning}</p>
     </Card>
   );

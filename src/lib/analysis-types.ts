@@ -57,12 +57,27 @@ export type EquityDetails = {
   vestingSchedule?: string;
 };
 
+// Real market compensation pulled from an external data source (Adzuna), not an
+// LLM estimate. Null when no key is configured or the query returned no match.
+export type SalaryMarketData = {
+  source: string; // e.g. "Adzuna"
+  currency: string; // ISO-ish, e.g. "USD", "GBP"
+  average: number;
+  min: number;
+  max: number;
+  sampleSize: number;
+  title: string;
+  location?: string;
+  asOf: string; // ISO timestamp of when it was fetched
+};
+
 export type SalaryAgent = {
   verdict: "underpaid" | "fair" | "overpaid" | "unknown";
   marketRangeEstimate: string;
   confidence: Confidence;
   reasoning: string;
   equityDetails?: EquityDetails;
+  marketData?: SalaryMarketData | null;
 };
 
 export type GhostAgent = {
