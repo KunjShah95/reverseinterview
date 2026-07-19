@@ -22,7 +22,16 @@ const AI_CONCURRENCY = Math.max(1, Math.min(20, Number(process.env.AI_CONCURRENC
 // "running" forever and the client polls indefinitely. A timeout converts the
 // hang into a throw, which triggers the fallback chain below. Tune via
 // AI_TIMEOUT_MS env var.
-const AI_TIMEOUT_MS = Math.max(5_000, Number(process.env.AI_TIMEOUT_MS) || 45_000);
+const AI_TIMEOUT_MS = Math.max(5_000, Number(process.env.AI_TIMEOUT_MS) || 30_000);
+
+// Cap how many backup providers we cascade through after the primary fails.
+// Without a cap, a single stalled agent can burn AI_TIMEOUT_MS on the primary
+// plus every backup in BACKUP_MODELS (6) — 7 sequential attempts, each holding
+// a semaphore slot. That starves the shared pool so the tail of the swarm
+// (later specialists + critic + orchestrator) never runs before the serverless
+// function is torn down, and its cards spin "pending" forever. 2 keeps latency
+// bounded while still surviving one dead provider. Tune via AI_MAX_FALLBACKS.
+const AI_MAX_FALLBACKS = Math.max(0, Math.min(6, Number(process.env.AI_MAX_FALLBACKS) || 2));
 
 // Low temperature = deterministic, grounded output. High temp (provider default
 // ~1) makes the model invent numbers and "creative" filler not backed by the
@@ -178,10 +187,15 @@ export async function generateTextWithProvider<
   } catch (error) {
     console.error(`Primary model call failed (Provider: ${provider}):`, error);
 
-    // Attempt fallback to other configured models
+    // Attempt fallback to other configured models, capped at AI_MAX_FALLBACKS
+    // so a dead primary can't cascade through every provider and blow the
+    // function's time budget.
+    let fallbacksTried = 0;
     for (const backup of BACKUP_MODELS) {
+      if (fallbacksTried >= AI_MAX_FALLBACKS) break;
       if (backup.provider === provider) continue; // Don't retry the same failing provider
       if (!hasKeyForProvider(backup.provider)) continue; // Skip if API key is missing
+      fallbacksTried++;
 
       try {
         console.warn(`Attempting fallback LLM call with provider: ${backup.provider}, model: ${backup.modelName}`);

@@ -43,6 +43,18 @@ function withExpiry(record: Omit<JobRecord, "updatedAt" | "expiresAt">): JobReco
   };
 }
 
+// Refresh the liveness timestamps on every write. Without this, patches from the
+// swarm keep the original setJob time, so (a) the row can expire mid-run and
+// (b) the client can't tell a still-running job from a dead one whose function
+// was torn down. A fresh updatedAt lets pollers detect a stalled job.
+function touch(record: JobRecord): JobRecord {
+  return {
+    ...record,
+    updatedAt: new Date().toISOString(),
+    expiresAt: Date.now() + TTL_MS,
+  };
+}
+
 export async function setJob(
   id: string,
   record: Omit<JobRecord, "updatedAt" | "expiresAt">,
@@ -96,7 +108,7 @@ export async function updateJob(
         const snap = await tx.get(ref);
         const current = snap.exists ? (snap.data() as JobRecord) : null;
         const next = mutate(current);
-        if (next) tx.set(ref, pruneUndefined(next), { merge: false });
+        if (next) tx.set(ref, pruneUndefined(touch(next)), { merge: false });
       });
       return;
     } catch (err) {
@@ -104,7 +116,7 @@ export async function updateJob(
     }
   }
   const next = mutate(memory.get(id) ?? null);
-  if (next) memory.set(id, next);
+  if (next) memory.set(id, touch(next));
 }
 
 function pruneUndefined<T extends Record<string, unknown>>(obj: T): T {
