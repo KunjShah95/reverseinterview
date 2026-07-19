@@ -252,6 +252,20 @@ export const startAnalysis = createServerFn({ method: "POST" })
       { id: "powerDynamics" as const, run: runPowerDynamicsAgent },
       { id: "teamChemistry" as const, run: runTeamChemistryAgent },
       { id: "legal" as const, run: runLegalAgent },
+      {
+        id: "companyDeepDive" as const,
+        // Runs as part of the swarm for every analysis (previously it only ran
+        // when the user opted into email, so the "Company background" card spun
+        // forever for everyone else). Resolves the company from the explicit
+        // field or the first line of the pasted text.
+        run: async (ctx: AnalysisInput) => {
+          const companyName = ctx.company?.trim() || pickCompany(ctx.sourceText);
+          if (!companyName || companyName === "Unknown Company") {
+            throw new Error("No company name detected to research.");
+          }
+          return runCompanyDeepDive(companyName);
+        },
+      },
     ];
 
     const criticAgent = {
@@ -291,7 +305,7 @@ export const startAnalysis = createServerFn({ method: "POST" })
     // recycled, the last completed progress + partial result survives and the
     // client can keep polling successfully.
     const pipeline = (async () => {
-      await runSwarmJob({
+      const swarmDone = runSwarmJob({
         analysisId,
         input,
         specialistAgents,
@@ -300,7 +314,40 @@ export const startAnalysis = createServerFn({ method: "POST" })
         persistPatch,
       });
 
-      // After swarm, trigger email + deep dive if opted in.
+      // Watchdog: guarantee the job reaches a terminal state within the
+      // function's time budget. If the swarm stalls (e.g. a provider hangs),
+      // flip any still pending/running agents to "skipped" and finalize as
+      // "partial" so the client stops spinning instead of polling a job that is
+      // "running" forever. Well under a typical 300s Vercel maxDuration.
+      const PIPELINE_DEADLINE_MS = Math.max(
+        60_000,
+        Number(process.env.PIPELINE_DEADLINE_MS) || 240_000,
+      );
+      const timedOut = await Promise.race([
+        swarmDone.then(() => false),
+        new Promise<boolean>((r) => setTimeout(() => r(true), PIPELINE_DEADLINE_MS)),
+      ]);
+      if (timedOut) {
+        await updateJob(analysisId, (c) => {
+          if (!c) return c;
+          const progress = { ...c.progress };
+          for (const key of Object.keys(progress) as (keyof RunProgress)[]) {
+            if (progress[key] === "pending" || progress[key] === "running") {
+              progress[key] = "skipped";
+            }
+          }
+          return {
+            ...c,
+            status: c.status === "complete" ? c.status : "partial",
+            progress,
+            error: c.error ?? "Analysis took too long; showing partial results.",
+          };
+        });
+        return;
+      }
+
+      // After swarm, trigger email if opted in. The company deep dive already
+      // ran inside the swarm, so just reuse its result for the follow-up email.
       if (!(data.email && data.emailConsent)) return;
 
       const current = await getJob(analysisId);
@@ -328,29 +375,10 @@ export const startAnalysis = createServerFn({ method: "POST" })
       // Wave 1: Send main report
       await sendReportEmail(data.email!, result, undefined, pdfBase64);
 
-      // Wave 2: Company deep dive (only if we have a company name)
-      if (result.company && result.company !== "Unknown Company") {
-        await updateJob(analysisId, (c) =>
-          c ? { ...c, progress: { ...c.progress, companyDeepDive: "running" } } : c,
-        );
-        try {
-          const deepDive = await runCompanyDeepDive(result.company);
-          await updateJob(analysisId, (c) =>
-            c
-              ? {
-                  ...c,
-                  result: { ...c.result, companyDeepDive: deepDive } as PartialAnalysisResult,
-                  progress: { ...c.progress, companyDeepDive: "complete" },
-                }
-              : c,
-          );
-          await sendReportEmail(data.email!, result, deepDive, undefined);
-        } catch (err) {
-          await updateJob(analysisId, (c) =>
-            c ? { ...c, progress: { ...c.progress, companyDeepDive: "failed" } } : c,
-          );
-          console.error("Company deep dive failed:", err);
-        }
+      // Wave 2: Follow-up email with the company deep dive that the swarm
+      // already produced (if any). No second LLM/search call needed.
+      if (result.companyDeepDive) {
+        await sendReportEmail(data.email!, result, result.companyDeepDive, undefined);
       }
     })().catch((err) => {
       console.error("Analysis pipeline unhandled exception:", err);
@@ -375,6 +403,7 @@ export const pollAnalysis = createServerFn({ method: "POST" })
         progress: resetProgress(),
         result: null,
         preliminary: null,
+        updatedAt: null,
       };
     }
     return {
@@ -383,5 +412,6 @@ export const pollAnalysis = createServerFn({ method: "POST" })
       progress: cached.progress,
       result: cached.result ?? null,
       preliminary: cached.preliminary ?? null,
+      updatedAt: cached.updatedAt ?? null,
     };
   });

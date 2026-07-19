@@ -49,6 +49,7 @@ const AGENT_LABELS: { id: AgentId; label: string }[] = [
   { id: "managerRadar", label: "Manager radar" },
   { id: "powerDynamics", label: "Power dynamics" },
   { id: "teamChemistry", label: "Team chemistry" },
+  { id: "companyDeepDive", label: "Company background" },
 ];
 
 const ACTIVE_STATUSES: AnalysisStatus[] = ["queued", "running"];
@@ -1013,6 +1014,40 @@ function ReportPage() {
           saveLocalAnalysis(updated, user?.uid);
           clearInterval(interval);
         } else {
+          // Staleness guard: on Vercel the background pipeline can be torn down
+          // at maxDuration mid-run, leaving the job "running" forever with no
+          // further updates. If the server hasn't touched the job in a while,
+          // treat it as dead so the cards stop spinning instead of polling an
+          // abandoned job indefinitely.
+          const STALE_MS = 150_000;
+          const updatedMs = result.updatedAt ? Date.parse(result.updatedAt) : NaN;
+          if (!Number.isNaN(updatedMs) && Date.now() - updatedMs > STALE_MS) {
+            const now = new Date().toISOString();
+            const staleProgress = {} as AnalysisProgress;
+            for (const key of Object.keys(result.progress) as (keyof RunProgress)[]) {
+              const st = result.progress[key];
+              staleProgress[key] = {
+                status: st === "pending" || st === "running" ? "skipped" : st,
+                startedAt: now,
+                completedAt: now,
+              };
+            }
+            const updated: LocalAnalysisRecord = {
+              ...localData,
+              status: "failed",
+              error:
+                "Analysis stopped responding before finishing. Some sections may be incomplete — try running it again.",
+              progress: staleProgress,
+              result: {
+                ...localData.result,
+                ...result.result,
+              } as PartialAnalysisResult,
+            };
+            setLocalData(updated);
+            saveLocalAnalysis(updated, user?.uid);
+            clearInterval(interval);
+            return;
+          }
           // Update in-progress stages & partial results
           const now = new Date().toISOString();
           const finalProgress = {} as AnalysisProgress;
@@ -2276,19 +2311,25 @@ function SectionFallback({
   title: string;
   progress?: AnalysisProgress[AgentId];
 }) {
-  const failed = progress?.status === "failed";
+  // Only pending/running are still "in flight". failed/skipped (and any other
+  // non-active state) are terminal — show a static message, never an endless
+  // spinner, so a torn-down or timed-out run doesn't spin forever.
+  const status = progress?.status;
+  const inFlight = status === "pending" || status === "running" || status === undefined;
   return (
     <Card title={title}>
       <div className="flex min-h-24 items-center gap-3 rounded-lg border border-ink/10 bg-cream/40 p-4 text-sm text-body">
-        {failed ? (
-          <AlertTriangle size={16} className="shrink-0 text-ink/60" />
-        ) : (
+        {inFlight ? (
           <Loader2 size={16} className="shrink-0 animate-spin text-ink/60" />
+        ) : (
+          <AlertTriangle size={16} className="shrink-0 text-ink/60" />
         )}
         <span>
-          {failed
-            ? progress?.error || "This agent failed, but the rest of the swarm can continue."
-            : "Waiting for this agent to finish."}
+          {inFlight
+            ? "Waiting for this agent to finish."
+            : status === "skipped"
+              ? progress?.error || "This section was skipped — no data was available."
+              : progress?.error || "This agent failed, but the rest of the swarm can continue."}
         </span>
       </div>
     </Card>
