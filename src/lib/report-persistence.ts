@@ -4,7 +4,13 @@ import { saveReportToFirestore, listUserReports } from "./firestore";
 const LOCAL_ANALYSES_KEY = "rev-int-local-analyses";
 
 function canUseStorage() {
-  return typeof window !== "undefined" && !!window.localStorage;
+  if (typeof window === "undefined") return false;
+  try {
+    return !!window.localStorage;
+  } catch {
+    // Storage access is blocked — treat as unavailable instead of throwing.
+    return false;
+  }
 }
 
 function readAnalyses(): LocalAnalysisRecord[] {

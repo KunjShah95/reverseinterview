@@ -45,6 +45,35 @@ export type RunSwarmJobOptions<TInput> = {
   now?: () => string;
 };
 
+// Canonical order of every agent the swarm tracks. Kept here so progress
+// scaffolding stays in one place instead of being duplicated per caller.
+export const SWARM_AGENT_IDS = [
+  "culture",
+  "burnout",
+  "salary",
+  "ghost",
+  "negotiation",
+  "reverse",
+  "lie",
+  "simulation",
+  "legal",
+  "managerRadar",
+  "powerDynamics",
+  "teamChemistry",
+  "companyDeepDive",
+  "critic",
+  "orchestrator",
+] as const;
+
+/** Build a progress map with every swarm agent marked "pending". */
+export function createInitialProgress(): Record<string, AgentProgress> {
+  const progress: Record<string, AgentProgress> = {};
+  for (const id of SWARM_AGENT_IDS) {
+    progress[id] = { status: "pending" };
+  }
+  return progress;
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "string" && error.trim()) return error;

@@ -11,7 +11,9 @@ import {
 } from "@/components/InsightGraphs";
 import { useFirebaseAuth } from "@/lib/firebase-auth";
 import { getSessionId } from "@/lib/session";
-import { listUserReports, getUserDashboardStats } from "@/lib/firestore";
+import { listUserReports, getUserDashboardStats, isFirestoreBlocked } from "@/lib/firestore";
+import { CloudSyncBlockedBanner } from "@/components/CloudSyncBlockedBanner";
+import { CLOUD_SYNC_BLOCKED_EVENT } from "@/lib/cloud-sync-notice";
 import {
   getAllLocalDashboardStats,
   listAllLocalAnalysisRecords,
@@ -41,6 +43,7 @@ function History() {
   const [stats, setStats] = useState<HistoryStats | null>(null);
   const [records, setRecords] = useState<LocalAnalysisRecord[]>([]);
   const [firestoreLoading, setFirestoreLoading] = useState(false);
+  const [cloudBlocked, setCloudBlocked] = useState(isFirestoreBlocked());
 
   // Always load localStorage data on mount (works for unregistered users).
   // We read *all* local analyses — not just the current session — so users
@@ -50,6 +53,15 @@ function History() {
     if (getSessionId() === "ssr") return;
     setStats(getAllLocalDashboardStats());
     setRecords(listAllLocalAnalysisRecords());
+  }, []);
+
+  // Track Firestore health so the blocked-sync banner shows once the browser
+  // blocks Firestore (ad-blocker / privacy extension) instead of silently
+  // falling back to device-only storage.
+  useEffect(() => {
+    const onCloudBlocked = () => setCloudBlocked(isFirestoreBlocked());
+    window.addEventListener(CLOUD_SYNC_BLOCKED_EVENT, onCloudBlocked);
+    return () => window.removeEventListener(CLOUD_SYNC_BLOCKED_EVENT, onCloudBlocked);
   }, []);
 
   // When user is authenticated, also load Firestore data and merge
@@ -81,6 +93,7 @@ function History() {
       })
       .catch((err) => {
         console.error("Failed to load Firestore reports:", err);
+        setCloudBlocked(isFirestoreBlocked());
       })
       .finally(() => setFirestoreLoading(false));
   }, [user]);
@@ -152,6 +165,8 @@ function History() {
             <p className="mt-2 text-xs text-body">{total} report{total === 1 ? "" : "s"} in the archive.</p>
           </div>
         </header>
+
+        <CloudSyncBlockedBanner visible={cloudBlocked} />
 
         <div className="mt-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <MetricCard label="Saved reports" value={stats?.total ?? 0} caption="Every analysis on this device" tone="ink" />

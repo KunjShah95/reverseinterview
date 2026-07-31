@@ -38,18 +38,30 @@ export type LocalAnalysisInput = {
 };
 
 function canUseStorage() {
-  return typeof window !== "undefined" && !!window.localStorage;
+  if (typeof window === "undefined") return false;
+  try {
+    return !!window.localStorage;
+  } catch {
+    // Storage access is blocked (e.g. "Block all cookies" settings or privacy
+    // extensions). Treat it as unavailable instead of throwing and losing the
+    // record.
+    return false;
+  }
 }
 
+// In-memory fallback used when localStorage is blocked so reports still exist
+// for the current page session (mirrors session.ts's memory fallback).
+let memoryStore: LocalAnalysisRecord[] | null = null;
+
 function readAnalyses(): LocalAnalysisRecord[] {
-  if (!canUseStorage()) return [];
+  if (!canUseStorage()) return memoryStore ? [...memoryStore] : [];
   try {
     const raw = window.localStorage.getItem(LOCAL_ANALYSES_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as LocalAnalysisRecord[];
     return Array.isArray(parsed) ? parsed : [];
   } catch {
-    return [];
+    return memoryStore ? [...memoryStore] : [];
   }
 }
 
@@ -66,8 +78,11 @@ function trimForStorage(record: LocalAnalysisRecord): LocalAnalysisRecord {
 }
 
 function writeAnalyses(records: LocalAnalysisRecord[]) {
-  if (!canUseStorage()) return;
   const trimmed = records.slice(0, MAX_STORED_RECORDS).map(trimForStorage);
+  if (!canUseStorage()) {
+    memoryStore = trimmed;
+    return;
+  }
   try {
     window.localStorage.setItem(LOCAL_ANALYSES_KEY, JSON.stringify(trimmed));
   } catch (err) {
@@ -79,6 +94,7 @@ function writeAnalyses(records: LocalAnalysisRecord[]) {
       window.localStorage.setItem(LOCAL_ANALYSES_KEY, JSON.stringify(lean));
     } catch (retryErr) {
       console.error("localStorage write failed after trimming:", retryErr);
+      memoryStore = lean;
     }
   }
 }
@@ -456,14 +472,17 @@ export function saveLocalAnalysis(record: LocalAnalysisRecord, uid?: string) {
   const next = [record, ...records.filter((existing) => existing.id !== record.id)];
   writeAnalyses(next);
 
-  // Also persist to Firestore when user is authenticated (non-blocking)
+  // Also persist to Firestore when user is authenticated (non-blocking). The
+  // block detection lives in ./firestore; if it trips, it dispatches
+  // CLOUD_SYNC_BLOCKED_EVENT so pages can tell the user the report is safe on
+  // this device but won't sync across devices.
   if (uid) {
     import("./firestore")
-      .then(({ saveReportToFirestore }) => {
+      .then(({ saveReportToFirestore }) =>
         saveReportToFirestore(uid, record).catch((err) => {
           console.error("Failed to save report to Firestore:", err);
-        });
-      })
+        }),
+      )
       .catch((err) => {
         console.error("Failed to load firestore module:", err);
       });
