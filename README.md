@@ -82,3 +82,11 @@ src/
   hooks/           # Custom React hooks
 tests/             # Playwright E2E tests
 ```
+
+---
+
+## Case study
+
+The full write-up of OfferGuard AI (problem, architecture, trade-offs and results) lives at **[kunjshah.in/projects/offerguard-ai](https://kunjshah.in/projects/offerguard-ai)**.
+
+Built by [Kunj Shah](https://kunjshah.in), AI engineer.
